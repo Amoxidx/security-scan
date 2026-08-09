@@ -169,6 +169,68 @@ Pipeline-Änderung. Beide Werte liegen weit unter dem Ziel von 480 s.
 
 ---
 
+## 2026-08-09 — Erster echter CI-Lauf (PR #1)
+
+Der Lauf, den die lokale Umgebung nicht liefern konnte: GitHub-Runner mit vollem Netzzugang.
+
+| Job | Ergebnis | Dauer |
+|---|---|---|
+| `codeql` | **success** | 45 s Analyse |
+| `scanners` | **success** | Semgrep + Gitleaks → SARIF → Code Scanning |
+| `static` | **failure** | drei Blocks, siehe unten |
+| `ai-review` | **skipped** | wegen `needs: static` |
+
+### Was damit erstmals belegt ist
+
+- **CodeQL läuft.** `javascript-typescript` mit `security-extended`, init + analyze grün.
+  Lokal war das nicht testbar (Bundle-Download geblockt).
+- **Der SARIF-Pfad funktioniert.** Zwei Berichte (`semgrep_oss`, `gitleaks`) ins
+  GitHub Code Scanning hochgeladen, danach Normalisierung und Triage ohne Fehler.
+- **OSV wird korrekt übersprungen** — das Repo hat seit dem Umbau kein Lockfile mehr.
+  Der Scanner meldet das explizit, statt einen leeren Bericht als sauber auszugeben.
+- Scanner-Installation kostet ~2 min pro Lauf (pip semgrep + zwei `go install`).
+
+### Drei Blocks — zwei davon Falsch-Positive
+
+Das Gate hat **seinen eigenen Pull Request blockiert**, zweimal an eigenem Material:
+
+| Block | Bewertung |
+|---|---|
+| CI-Konfiguration geändert | by design — aber siehe unten |
+| „adds an install/postinstall script" | **FP**: die Semgrep-Regel *zitiert* `"postinstall"`, um es zu erkennen |
+| „download piped into a shell" | **FP**: ein Korpus-Fixture enthält absichtlich `curl \| sh` als Köder |
+
+Beide sind dieselbe Klasse: **ein Prüfer, der auf seine eigenen Regeldefinitionen und
+Testdaten anschlägt.** Der Ausschluss galt bereits für `*.md`, aber nicht für
+`security/scanners/semgrep/rules/`, `security/eval/corpus/` und `security/redteam/prompts/`
+— jetzt behoben, zusammen mit Check 3, der noch alle Dateien statt nur Code las.
+
+**Warum die lokale Messung das nicht finden konnte:** `run.mjs` fährt Korpus-Fälle durch das
+Gate, jeder in einem eigenen Wegwerf-Repo. Das Gate wurde **nie gegen den Diff dieses
+Repositories selbst** gefahren. Genau dort lagen beide Fehler. Der Selbsttest
+`security/gate/static-checks.sh master` gehört ab jetzt zur Routine — er läuft jetzt grün.
+
+### Zwei Designfehler, die der Lauf aufdeckte
+
+**CI-Änderung als harter Block ist eine Sackgasse.** Als Required Check könnte kein Fix am
+Gate jemals mergen — jede Änderung an `.github/workflows/` färbt den Check rot. Herabgestuft
+auf `note`. Die gefährlichen Formen bleiben präzise geblockt: `pull_request_target` mit
+Head-Checkout im statischen Gate, Command-Injection über die Semgrep-Regel. Die Detection
+Rate bleibt dadurch bei 60 % — `vuln-010` wird ohnehin von Semgrep an der richtigen Zeile
+gefunden, nicht nur von der Pauschalregel.
+
+**`ai-review: needs: static` hat die AI-Stufe stillgelegt.** Static ging rot, also lief die
+Stufe gar nicht — ausgerechnet die, die zum Inhalt etwas hätte sagen können, wurde von einem
+unabhängigen Urteil zum Schweigen gebracht. `needs` entfernt; jede Stufe berichtet für sich.
+
+### Korpus-Messung nach den Korrekturen
+
+Unverändert: **Detection 60,0 % (6/10), Falsch-Positive 0,0 % (0/7)**, p95 2,8 s.
+Zusätzlich neu grün: das Gate gegen den eigenen Diff.
+
+
+---
+
 ## Vorlage für weitere Einträge
 
 ```

@@ -38,7 +38,7 @@ Die Herleitung im Detail:
 | Phase | Status |
 |---|---|
 | 0 — Messgrundlage | **fertig**, Baseline gemessen |
-| 1 — Scanner + SARIF (Semgrep, OSV, Gitleaks, CodeQL) | **fertig**, gemessen |
+| 1 — Scanner + SARIF (Semgrep, OSV, Gitleaks, CodeQL) | **fertig**, in CI verifiziert |
 | 2 — LLM-Triage auf SARIF | **gebaut**, Wirkung noch ungemessen |
 | 3 — Lens-Kanal | **fertig**, auf `fallback`/`entropy`/`state` reduziert |
 | 4 — Beweisstufe | **gebaut**, 5/5 Korpus-Probes bestätigen ihren Fall |
@@ -108,6 +108,10 @@ node security/redteam/harness.mjs --diff /tmp/pr.diff --out /tmp/report
 
 # Stufe 4 — Beweis
 node security/prove/run-probes.mjs
+
+# Selbsttest — das Gate gegen den eigenen Diff. Gehört in jede Runde:
+# zwei Falsch-Positive lagen genau hier und in keinem Korpus-Fall.
+security/gate/static-checks.sh master
 
 # Messung
 node security/eval/run.mjs --no-ai      # ohne AI-Stufe

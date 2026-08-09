@@ -119,7 +119,9 @@ jobs:
   ai-review:
     name: ai-review
     runs-on: ubuntu-latest
-    needs: static
+    # No `needs:` on purpose. The first CI run showed the cost of chaining them: static went
+    # red, and the AI stage never ran at all — the one stage that might have said something
+    # about the change was silenced by an unrelated verdict. Each stage reports its own.
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
