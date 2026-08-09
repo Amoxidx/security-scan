@@ -1,0 +1,17 @@
+{
+  "$comment": "Agent-level tier of the gate. PreToolUse is the only hook that can block, so this is where a bad edit gets stopped before it is written rather than after it is committed.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "security/hooks/claude-pretooluse.sh",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

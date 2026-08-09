@@ -1,0 +1,9 @@
+{
+  "id": "vuln-007-path-traversal",
+  "class": "parser",
+  "cwe": "CWE-22",
+  "severity": "high",
+  "summary": "Asset name from a request is joined onto a base directory without normalisation, so ../ escapes the asset root.",
+  "ground_truth": { "file": "src/assets.ts", "lines": [5, 8] },
+  "must_detect": true
+}

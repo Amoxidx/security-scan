@@ -1,0 +1,40 @@
+rules:
+  - id: timing-unsafe-mac-comparison
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Secret-dependent value compared with === or !=. String comparison short-circuits, which
+      leaks the expected value byte by byte. Use crypto.timingSafeEqual.
+    metadata:
+      cwe: "CWE-208: Observable Timing Discrepancy"
+      category: security
+    # Either side of the comparison may hold the secret, so the two cases are separate
+    # branches: metavariable-regex is a condition, not a pattern, and cannot sit inside a
+    # pattern-either.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: $A === $B
+              - pattern: $A == $B
+              - pattern: $A !== $B
+          - metavariable-regex:
+              metavariable: $A
+              regex: (?i).*(hmac|signature|digest|mac|expected|token|secret).*
+          - pattern-inside: |
+              function $F(...) { ... }
+          - metavariable-regex:
+              metavariable: $F
+              regex: (?i).*(verify|check|validate|compare|auth|signature).*
+      - patterns:
+          - pattern-either:
+              - pattern: $A === $B
+              - pattern: $A == $B
+              - pattern: $A !== $B
+          - metavariable-regex:
+              metavariable: $B
+              regex: (?i).*(hmac|signature|digest|mac|expected|token|secret).*
+          - pattern-inside: |
+              function $F(...) { ... }
+          - metavariable-regex:
+              metavariable: $F
+              regex: (?i).*(verify|check|validate|compare|auth|signature).*

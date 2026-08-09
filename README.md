@@ -1,0 +1,167 @@
+# Security Scan
+
+Eine blockierende Security-Schwelle für Pull Requests — Werkzeuge suchen, ein Modell filtert,
+und rot wird der Check nur für das, was eine adversarielle Verifikation überlebt hat.
+
+Entstanden aus der Frage, wie das **Bitcoin Red Team** im August 2026 in 27,5 Stunden 4.962
+Findings über 390 Repositories erzeugt hat — und was davon sich als wiederkehrender
+CI-Check überhaupt sinnvoll nachbauen lässt.
+
+---
+
+## Warum das so gebaut ist
+
+Drei Zahlen prägen jede Designentscheidung hier:
+
+- Das Bitcoin Red Team produzierte 4.962 Findings, von denen zum Reportzeitpunkt **21,4 %
+  reproduziert** waren. Eine Suchmaschine mit 16 Leuten Triage dahinter ist kein Gate.
+- Im DARPA AIxCC erreichte **Buttercup** (Trail of Bits) 90 % Genauigkeit bei 181 USD/Punkt
+  — mit ausschließlich Nicht-Reasoning-Modellen. Architektur schlägt Modellwahl.
+- LLMs als **Filter** auf SAST-Output senken die Falsch-Positiv-Rate im OWASP-Benchmark von
+  über 92 % auf **6 %**. Als *Finder* liegen dieselben Modelle bei 18–34 %.
+
+Daraus folgt die Suchrichtung: **Werkzeuge suchen, das Modell filtert.** Nicht umgekehrt.
+
+Die Herleitung im Detail:
+
+| Dokument | Inhalt |
+|---|---|
+| [Rekonstruktion](docs/security/bitcoin-red-team-reconstruction.md) | Wie das Bitcoin Red Team gearbeitet hat — belegt, abgeleitet, rekonstruiert, mit Agent-Graph |
+| [Setup-Evaluation](docs/security/setup-evaluation.md) | Welche Harness, welches Modell, welche Werkzeuge, Graphs, Hooks — mit Evidenz |
+| [Implementierungsplan](docs/security/implementation-plan.md) | Phasen 0–7, Aufwand, Risiken, Definition of Done |
+| [Messungen](docs/security/measurements.md) | Fortlaufendes Messprotokoll |
+
+---
+
+## Stand
+
+| Phase | Status |
+|---|---|
+| 0 — Messgrundlage | **fertig**, Baseline gemessen |
+| 1 — Scanner + SARIF (Semgrep, OSV, Gitleaks, CodeQL) | **fertig**, gemessen |
+| 2 — LLM-Triage auf SARIF | **gebaut**, Wirkung noch ungemessen |
+| 3 — Lens-Kanal | **fertig**, auf `fallback`/`entropy`/`state` reduziert |
+| 4 — Beweisstufe | **gebaut**, 5/5 Korpus-Probes bestätigen ihren Fall |
+| 5 — Graph-Kontext | offen (CodeQL-DB deckt den Bedarf vorerst) |
+| 6 — Hooks (3 Ebenen) | **fertig** — Agent, Commit, CI |
+| 7 — Scharfschalten | offen, wartet auf Phase-2-Messung |
+
+**Aktuell gemessen** (statisches Gate + Scanner, ohne AI-Stufe — [Details](docs/security/measurements.md)):
+
+| Metrik | Baseline | Jetzt | Ziel |
+|---|---|---|---|
+| Detection Rate | 10,0 % | **60,0 %** (6/10) | ≥ 50 % |
+| Falsch-Positiv-Rate | 14,3 % | **0,0 %** (0/7) | ≤ 5 % |
+| p95 Wall-Clock | 0,8 s | 2,7 s | ≤ 480 s |
+
+Die vier verbleibenden Misses verlangen semantisches Verständnis — „diese 32 Byte tragen nur
+32 Bit Entropie", „dieser Zähler wird bei Reconnect zurückgesetzt". Kein Pattern-Matching
+erreicht das; dafür existiert der Lens-Kanal.
+
+---
+
+## Aufbau
+
+```
+security/
+├── gate/static-checks.sh        Stufe 0 — deterministisch, Sekunden, blockiert immer
+├── scanners/
+│   ├── semgrep/rules/           12 eigene Regeln für Klassen ohne Standardregel
+│   ├── run-scanners.sh          Semgrep + OSV + Gitleaks → SARIF
+│   └── normalize.mjs            SARIF → ein Finding-Stream, auf Diff-Scope beschränkt
+├── redteam/
+│   ├── triage.mjs               Stufe 2 — LLM filtert Scanner-Output
+│   ├── harness.mjs              Stufe 3 — Lens-Hunt → dedupe → k-of-n verify → report
+│   ├── providers.mjs            CLI / Anthropic / OpenAI, austauschbar
+│   ├── config.json              Provider, Lenses, Modelle, Blocking-Schwelle
+│   └── prompts/                 die sechs Pipeline-Stufen
+├── prove/                       Stufe 4 — Probes, isoliert im Kindprozess
+├── hooks/                       Agent- und Commit-Ebene
+└── eval/
+    ├── run.mjs                  Messharness
+    └── corpus/                  10 Vuln-Fälle, 7 Negativkontrollen
+
+.claude/settings.json            PreToolUse-Hook
+.github/workflows/security-scan.yml
+docs/security/
+```
+
+---
+
+## Benutzen
+
+```bash
+# Stufe 0
+security/gate/static-checks.sh origin/master
+
+# Stufe 1 — Scanner
+security/scanners/run-scanners.sh . security-report/sarif
+git diff origin/master...HEAD > /tmp/pr.diff
+node security/scanners/normalize.mjs --sarif security-report/sarif --diff /tmp/pr.diff \
+  --out security-report/findings.json
+
+# Stufe 2 — Triage
+node security/redteam/triage.mjs --findings security-report/findings.json --repo .
+
+# Stufe 3 — Lens-Kanal
+node security/redteam/harness.mjs --diff /tmp/pr.diff --out /tmp/report
+
+# Stufe 4 — Beweis
+node security/prove/run-probes.mjs
+
+# Messung
+node security/eval/run.mjs --no-ai      # ohne AI-Stufe
+node security/eval/run.mjs              # vollständig
+
+# Hooks installieren
+security/hooks/install.sh
+```
+
+Node ≥ 20, `git`, `bash`. Scanner optional, aber ohne sie fällt die Detection Rate auf 10 %:
+
+```bash
+pip install semgrep
+go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
+go install github.com/zricethezav/gitleaks/v8@latest
+```
+
+**Modelle laufen standardmäßig über Abo-CLIs**, nicht über metered APIs:
+
+```bash
+npm i -g @kimi-code/cli && kimi        # einmalig einloggen
+```
+
+Details und die Alternativen (Anthropic-kompatibel, OpenAI-kompatibel) in
+[`security/README.md`](security/README.md).
+
+---
+
+## In ein anderes Repo übernehmen
+
+`security/` und `.github/workflows/security-scan.yml` sind selbstständig. Anzupassen sind die
+Host-Allowlist in `static-checks.sh`, die Lens-Auswahl und Blocking-Schwelle in
+`security/redteam/config.json`, sowie der Korpus in `security/eval/corpus/` — echte,
+historische Fixes aus dem eigenen Repo treffen das eigene Bedrohungsmodell besser als jeder
+generische Korpus.
+
+---
+
+## Was das nicht ist
+
+Kein zuverlässiger Schwachstellen-Detektor. Das beste gemessene System der Welt (ATLANTIS,
+AIxCC-Sieger) fand 61 % der Schwachstellen — in einem Wettbewerb mit maschinell prüfbarer
+Ground Truth, die es in JavaScript/TypeScript nicht gibt. Realistisches Ziel ist ein Gate,
+das die bekannten Klassen zuverlässig blockiert, den Rest gefiltert einem Menschen vorlegt,
+und dessen Fehlerrate **gemessen und dokumentiert** ist.
+
+---
+
+## Hinweise
+
+Der Code unter `security/eval/corpus/` ist **absichtlich verwundbar**. Er dient als
+Messgrundlage, wird nie gebaut und nie ausgeliefert.
+
+Das Repository trägt derzeit **keine Lizenz**. Für ein öffentliches Repo bedeutet das
+rechtlich „alle Rechte vorbehalten" — niemand darf den Code nutzen, forken oder verändern.
+Falls das nicht gewollt ist, gehört eine `LICENSE` mit dem tatsächlichen Rechteinhaber hier
+hinein.

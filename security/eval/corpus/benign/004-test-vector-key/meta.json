@@ -1,0 +1,6 @@
+{
+  "id": "benign-004-test-vector-key",
+  "decoy": "hardcoded key material in a test file — a published BIP-32 test vector",
+  "targets_check": "secret scanning",
+  "must_detect": false
+}

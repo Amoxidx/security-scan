@@ -1,0 +1,47 @@
+rules:
+  - id: workflow-command-injection
+    languages: [yaml]
+    severity: ERROR
+    paths:
+      include: ["*.github/workflows/*", "*.github/actions/*"]
+    message: >-
+      Attacker-controlled GitHub context interpolated into a run: block. A pull request
+      title, branch name or body becomes shell on the runner. Pass it through an env: var
+      and reference "$VAR" inside the script instead.
+    metadata:
+      cwe: "CWE-94: Improper Control of Generation of Code"
+      category: security
+      class: supply-chain
+    pattern-regex: >-
+      run:[^\n]*\$\{\{\s*github\.(event\.(pull_request|issue|comment|review)\.[a-z_.]*(title|body|login|ref|label)|head_ref)[^}]*\}\}
+
+  - id: pull-request-target-with-head-checkout
+    languages: [yaml]
+    severity: ERROR
+    paths:
+      include: ["*.github/workflows/*"]
+    message: >-
+      pull_request_target runs with repository secrets. Combined with a checkout of the pull
+      request head it executes untrusted code with those secrets in scope.
+    metadata:
+      cwe: "CWE-269: Improper Privilege Management"
+      category: security
+      class: supply-chain
+    pattern-regex: '(?s)pull_request_target:.*?ref:\s*\$\{\{\s*github\.event\.pull_request\.head'
+
+  - id: npm-install-hook-added
+    languages: [json]
+    severity: WARNING
+    paths:
+      include: ["*package.json"]
+    message: >-
+      An install hook runs arbitrary code on every npm install, including on developer
+      machines and CI runners. Confirm this is intended.
+    metadata:
+      cwe: "CWE-829: Inclusion of Functionality from Untrusted Control Sphere"
+      category: security
+      class: supply-chain
+    pattern-either:
+      - pattern: '"preinstall": "..."'
+      - pattern: '"install": "..."'
+      - pattern: '"postinstall": "..."'

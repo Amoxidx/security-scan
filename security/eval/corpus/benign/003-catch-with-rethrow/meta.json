@@ -1,0 +1,6 @@
+{
+  "id": "benign-003-catch-with-rethrow",
+  "decoy": "try/catch around a crypto call that logs and rethrows — no degradation",
+  "targets_check": "fallback lens, silent-catch rule",
+  "must_detect": false
+}

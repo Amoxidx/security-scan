@@ -1,0 +1,31 @@
+rules:
+  - id: key-copy-without-proto-guard
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Keys copied from an untrusted object without excluding __proto__, constructor and
+      prototype. A crafted payload writes onto Object.prototype and affects every object in
+      the process. Guard the key name, or merge into a null-prototype target.
+    metadata:
+      cwe: "CWE-1321: Prototype Pollution"
+      category: security
+      class: parser
+    patterns:
+      # The sink: a key taken from the source drives the write on the destination.
+      - pattern: $DST[$K] = $SRC[$K]
+      # Only inside an iteration over the source's keys — a single indexed copy with a
+      # literal or validated key is not this bug.
+      - pattern-inside: |
+          for (...) { ... }
+      - pattern-not-inside: |
+          if (<... $K === "__proto__" ...>) { ... }
+      - pattern-not-inside: |
+          if (<... $K !== "__proto__" ...>) { ... }
+      - pattern-not-inside: |
+          if (<... $K == "__proto__" ...>) { ... }
+      - pattern-not-inside: |
+          if (<... [...].includes($K) ...>) { ... }
+      - pattern-not-inside: |
+          if (<... Object.hasOwn(...) ...>) { ... }
+      - pattern-not-inside: |
+          if (<... hasOwnProperty(...) ...>) { ... }

@@ -1,0 +1,43 @@
+rules:
+  - id: crypto-fallback-in-catch
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      A catch block around a cryptographic call substitutes a weaker source instead of
+      failing. This is the COLDCARD pattern: the guarantee drops silently and nothing
+      observable changes. Fail closed instead.
+    metadata:
+      cwe: "CWE-693: Protection Mechanism Failure"
+      category: security
+      class: silent-degradation
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try { ... $CRYPTO(...); ... } catch(...) { ... Math.random(...) ... }
+          - pattern: |
+              try { ... return $CRYPTO(...); } catch(...) { ... Math.random(...) ... }
+      - metavariable-regex:
+          metavariable: $CRYPTO
+          regex: (?i).*(randomBytes|getRandomValues|generateKey|randomFill).*
+
+  - id: verification-returns-true-when-unconfigured
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      A verification function returns true when its key or configuration is missing. A
+      missing config value becomes an authentication bypass. Fail closed.
+    metadata:
+      cwe: "CWE-347: Improper Verification of Cryptographic Signature"
+      category: security
+      class: silent-degradation
+    patterns:
+      - pattern-either:
+          - pattern: |
+              function $F(...) { ... if (!$KEY) { ... return true; } ... }
+          - pattern: |
+              function $F(...) { ... if ($KEY === undefined) { ... return true; } ... }
+          - pattern: |
+              function $F(...) { ... if ($KEY == null) { ... return true; } ... }
+      - metavariable-regex:
+          metavariable: $F
+          regex: (?i).*(verify|validate|check|auth|authenticate|assert).*

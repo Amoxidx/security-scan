@@ -1,0 +1,6 @@
+{
+  "id": "benign-001-ui-jitter-random",
+  "decoy": "Math.random() — correct use, no security context",
+  "targets_check": "weak-random / entropy lens",
+  "must_detect": false
+}

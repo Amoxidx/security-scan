@@ -1,0 +1,9 @@
+{
+  "id": "vuln-003-verify-skipped-no-key",
+  "class": "silent-degradation",
+  "cwe": "CWE-347",
+  "severity": "critical",
+  "summary": "Signature verification returns true when no public key is configured, turning a missing config value into an auth bypass.",
+  "ground_truth": { "file": "src/verify.ts", "lines": [5, 9] },
+  "must_detect": true
+}

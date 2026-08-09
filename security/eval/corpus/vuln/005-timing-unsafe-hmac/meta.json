@@ -1,0 +1,9 @@
+{
+  "id": "vuln-005-timing-unsafe-hmac",
+  "class": "crypto",
+  "cwe": "CWE-208",
+  "severity": "high",
+  "summary": "HMAC comparison switched from timingSafeEqual to ===, leaking the expected tag byte by byte.",
+  "ground_truth": { "file": "src/webhook.ts", "lines": [7, 9] },
+  "must_detect": true
+}

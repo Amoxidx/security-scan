@@ -1,0 +1,15 @@
+{
+  "name": "security-scan",
+  "version": "0.1.0",
+  "description": "Blocking pull request security gate: tools find, a model filters, only verified findings turn the check red",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "gate": "security/gate/static-checks.sh",
+    "review": "node security/redteam/harness.mjs",
+    "eval": "node security/eval/run.mjs",
+    "eval:static": "node security/eval/run.mjs --no-ai"
+  },
+  "license": "UNLICENSED"
+}

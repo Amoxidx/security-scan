@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#
+# Commit-level gate. Runs the two checks that finish in seconds on the staged diff.
+# The full pipeline stays in CI; this tier exists to catch things before they leave the
+# machine, not to duplicate the gate.
+#
+# Install: security/hooks/install.sh   ·   Bypass once: git commit --no-verify
+
+set -uo pipefail
+ROOT=$(git rev-parse --show-toplevel)
+FAIL=0
+
+STAGED=$(git diff --cached --name-only --diff-filter=d)
+[ -z "$STAGED" ] && exit 0
+
+if command -v semgrep >/dev/null 2>&1; then
+  # Only the staged files, only local rules, no network.
+  # shellcheck disable=SC2086
+  semgrep --metrics=off --quiet --error \
+    --config "$ROOT/security/scanners/semgrep/rules" $STAGED
+  rc=$?
+  # 1 = findings, 2+ = the scan failed. A broken scanner must be loud, not blocking.
+  if [ $rc -eq 1 ]; then FAIL=1
+  elif [ $rc -ge 2 ]; then echo "  semgrep failed (exit $rc) — not blocking on a broken scan"
+  fi
+else
+  echo "  semgrep not installed — skipping (pip install semgrep)"
+fi
+
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --staged --no-banner --redact "$ROOT" || FAIL=1
+else
+  echo "  gitleaks not installed — skipping"
+fi
+
+if [ "$FAIL" -ne 0 ]; then
+  echo
+  echo "Commit blocked by the security hook. Fix the findings, or use --no-verify if this is"
+  echo "a false positive — and then open an issue so the rule gets fixed."
+  exit 1
+fi
+exit 0

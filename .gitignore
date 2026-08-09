@@ -1,0 +1,4 @@
+node_modules
+security/eval/results/
+security-report/
+*.log

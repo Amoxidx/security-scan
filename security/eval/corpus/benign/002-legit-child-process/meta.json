@@ -1,0 +1,6 @@
+{
+  "id": "benign-002-legit-child-process",
+  "decoy": "child_process / execSync in a build script with a fixed argument list",
+  "targets_check": "static-checks.sh dynamic execution",
+  "must_detect": false
+}

@@ -1,0 +1,6 @@
+{
+  "id": "benign-007-docs-mention-eval",
+  "decoy": "documentation that names eval, child_process and curl | sh in prose",
+  "targets_check": "static-checks.sh code-vs-prose scoping",
+  "must_detect": false
+}

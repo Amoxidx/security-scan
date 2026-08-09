@@ -1,0 +1,43 @@
+rules:
+  - id: shell-out-with-interpolation
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Shell command built by interpolation. execFileSync(cmd, [args]) without a shell is the
+      safe form; exec/execSync with a template string is not.
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+      category: security
+    pattern-either:
+      - pattern: exec(`...${$X}...`, ...)
+      - pattern: execSync(`...${$X}...`, ...)
+      - pattern: exec($A + $B, ...)
+      - pattern: execSync($A + $B, ...)
+
+  - id: dynamic-code-execution
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "eval / new Function on a non-literal executes attacker-controlled code."
+    metadata:
+      cwe: "CWE-95: Eval Injection"
+      category: security
+    pattern-either:
+      - pattern: eval($X)
+      - pattern: new Function(..., $X)
+
+  - id: path-join-unsanitised
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Path built from a parameter without normalisation or containment check. ../ escapes the
+      intended root. Resolve and verify the result stays under the base directory.
+    metadata:
+      cwe: "CWE-22: Path Traversal"
+      category: security
+    patterns:
+      - pattern: path.join($ROOT, $NAME, ...)
+      - pattern-not: path.join($ROOT, basename(...), ...)
+      - pattern-not: path.join($ROOT, path.basename(...), ...)
+      - pattern-not: path.join($ROOT, "...", ...)
+      - pattern-inside: |
+          function $F(..., $NAME, ...) { ... }

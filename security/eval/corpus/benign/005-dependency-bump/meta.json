@@ -1,0 +1,6 @@
+{
+  "id": "benign-005-dependency-bump",
+  "decoy": "package.json and lockfile updated together — the legitimate shape of a dependency bump",
+  "targets_check": "lockfile drift",
+  "must_detect": false
+}

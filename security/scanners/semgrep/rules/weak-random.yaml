@@ -1,0 +1,39 @@
+rules:
+  - id: weak-random-in-security-context
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Math.random() is not a CSPRNG. In a path that produces keys, seeds, nonces, tokens or
+      salts this silently lowers the security guarantee while still returning plausible
+      output, so tests stay green. Use crypto.randomBytes / crypto.getRandomValues.
+    metadata:
+      cwe: "CWE-338: Use of Cryptographically Weak PRNG"
+      category: security
+      class: silent-degradation
+    patterns:
+      - pattern: Math.random(...)
+      - pattern-inside: |
+          function $F(...) { ... }
+      - metavariable-regex:
+          metavariable: $F
+          regex: (?i).*(key|seed|nonce|token|salt|secret|entropy|random|iv|password).*
+
+  - id: weak-random-assigned-to-secret
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Math.random() assigned to a security-relevant identifier. Use a CSPRNG.
+    metadata:
+      cwe: "CWE-338: Use of Cryptographically Weak PRNG"
+      category: security
+      class: silent-degradation
+    patterns:
+      - pattern-either:
+          - pattern: $X = Math.random(...)
+          - pattern: $X = Math.floor(Math.random(...) * ...)
+          - pattern: var $X = Math.random(...)
+          - pattern: let $X = Math.random(...)
+          - pattern: const $X = Math.random(...)
+      - metavariable-regex:
+          metavariable: $X
+          regex: (?i).*(key|seed|nonce|token|salt|secret|entropy|iv|password).*

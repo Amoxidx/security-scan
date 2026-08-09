@@ -1,0 +1,9 @@
+{
+  "id": "vuln-009-check-then-act-balance",
+  "class": "state",
+  "cwe": "CWE-367",
+  "severity": "high",
+  "summary": "Balance check and debit split across an await, so two concurrent withdrawals both pass the check.",
+  "ground_truth": { "file": "src/ledger.ts", "lines": [4, 12] },
+  "must_detect": true
+}

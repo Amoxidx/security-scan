@@ -1,0 +1,10 @@
+{
+  "id": "vuln-001-prng-fallback",
+  "class": "silent-degradation",
+  "cwe": "CWE-338",
+  "severity": "critical",
+  "modeled_on": "COLDCARD RNG fallback, 2021-2026: seed generation silently routed to a software PRNG",
+  "summary": "Entropy source falls back to Math.random() when the CSPRNG throws. Output still looks random, tests stay green.",
+  "ground_truth": { "file": "src/entropy.ts", "lines": [8, 14] },
+  "must_detect": true
+}

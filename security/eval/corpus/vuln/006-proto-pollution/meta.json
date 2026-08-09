@@ -1,0 +1,9 @@
+{
+  "id": "vuln-006-proto-pollution",
+  "class": "parser",
+  "cwe": "CWE-1321",
+  "severity": "high",
+  "summary": "Recursive merge of attacker-supplied JSON walks __proto__, allowing prototype pollution.",
+  "ground_truth": { "file": "src/merge.ts", "lines": [3, 12] },
+  "must_detect": true
+}

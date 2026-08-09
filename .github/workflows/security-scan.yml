@@ -1,0 +1,167 @@
+name: Security Scan
+
+# The blocking security threshold for pull requests.
+#
+#   static    deterministic checks, always runs, always blocks
+#   scanners  Semgrep + OSV + Gitleaks -> SARIF -> normalized, blocks on error severity
+#   codeql    interprocedural taint analysis, uploads to code scanning
+#   ai-review the lens channel, blocks only on findings that survived verification
+#
+# Mark "Security Scan / static" and "Security Scan / scanners" as required status checks in
+# the branch protection rules for master to make this a threshold rather than a suggestion.
+#
+# This workflow uses `pull_request`, not `pull_request_target`, on purpose: it executes code
+# paths from the pull request, so it must not have repository secrets in scope for forks.
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+concurrency:
+  group: security-scan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: static
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Deterministic checks
+        run: |
+          chmod +x security/gate/static-checks.sh
+          security/gate/static-checks.sh "origin/${{ github.base_ref || 'master' }}"
+
+  scanners:
+    name: scanners
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install scanners
+        run: |
+          pip install --quiet semgrep
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
+          go install github.com/zricethezav/gitleaks/v8@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      - name: Build diff
+        run: git diff "origin/${{ github.base_ref || 'master' }}"...HEAD > /tmp/pr.diff
+
+      - name: Run scanners
+        run: |
+          chmod +x security/scanners/run-scanners.sh
+          security/scanners/run-scanners.sh . security-report/sarif
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: security-report/sarif
+          category: security-scan
+
+      # Normalize does not gate on its own — triage decides. Without a triage model the
+      # findings pass through untriaged and the scanner severities still block, so this stage
+      # is never weaker than the scanners alone.
+      - name: Normalize SARIF
+        run: |
+          node security/scanners/normalize.mjs \
+            --sarif security-report/sarif \
+            --diff /tmp/pr.diff \
+            --out security-report/findings.json || true
+
+      - name: Triage and gate
+        env:
+          SECURITY_AI_API_KEY: ${{ secrets.SECURITY_AI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          node security/redteam/triage.mjs \
+            --findings security-report/findings.json \
+            --repo . \
+            --out security-report/triaged.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scanner-findings
+          path: security-report/
+          if-no-files-found: ignore
+
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: codeql
+
+  ai-review:
+    name: ai-review
+    runs-on: ubuntu-latest
+    needs: static
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Build diff
+        run: git diff "origin/${{ github.base_ref || 'master' }}"...HEAD > /tmp/pr.diff
+
+      # Providers live in security/redteam/config.json. HTTP providers read their key from
+      # the environment below; subscription CLI providers need the CLI installed and logged
+      # in on the runner — read the warning in security/README.md before using one here.
+      - name: Lens review (hunt -> verify)
+        env:
+          SECURITY_AI_API_KEY: ${{ secrets.SECURITY_AI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node security/redteam/harness.mjs --diff /tmp/pr.diff --out security-report
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-findings
+          path: security-report/
+          if-no-files-found: ignore
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('security-report/report.md')) return;
+            const body = fs.readFileSync('security-report/report.md', 'utf8');
+            const marker = '<!-- security-scan -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const existing = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const mine = existing.data.find(c => c.body.includes(marker));
+            const payload = `${marker}\n${body}`;
+            if (mine) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body: payload });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body: payload });
+            }

@@ -1,0 +1,92 @@
+{
+  "$comment": "Providers are interchangeable. A pay-per-use gateway is the Red Team's setup, not a requirement \u2014 subscription CLIs (type 'cli') and Anthropic-compatible adapters reach the same models without metered billing. Model specs are 'provider:model'; a bare model id uses defaultProvider.",
+  "defaultProvider": "kimi-cli",
+  "$comment_concurrency": "Kimi Code allows ~30 concurrent requests and 300-1200 per 5h window depending on tier. CLI providers spawn a subprocess each, so keep this low locally.",
+  "maxConcurrency": 6,
+  "providers": {
+    "kimi-cli": {
+      "type": "cli",
+      "$comment": "Kimi Code CLI on a Kimi membership: npm i -g @kimi-code/cli, then `kimi` once to log in. No API key, no per-token cost. K3 needs Moderato tier or above.",
+      "command": [
+        "kimi",
+        "-p"
+      ],
+      "modelFlag": "--model",
+      "timeoutMs": 300000
+    },
+    "claude-cli": {
+      "type": "cli",
+      "$comment": "Claude Code on a Claude subscription. Same idea, different seat.",
+      "command": [
+        "claude",
+        "-p"
+      ],
+      "modelFlag": "--model",
+      "timeoutMs": 300000
+    },
+    "opencode-cli": {
+      "type": "cli",
+      "command": [
+        "opencode",
+        "run"
+      ],
+      "modelFlag": "--model",
+      "timeoutMs": 300000
+    },
+    "moonshot": {
+      "type": "anthropic",
+      "$comment": "Moonshot's Anthropic-compatible adapter. Metered, but no gateway in between.",
+      "baseUrl": "https://api.moonshot.ai/anthropic",
+      "apiKeyEnv": "MOONSHOT_API_KEY"
+    },
+    "anthropic": {
+      "type": "anthropic",
+      "baseUrl": "https://api.anthropic.com",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    },
+    "zen": {
+      "type": "openai",
+      "$comment": "OpenCode Zen \u2014 the Red Team's own setup: one key, many models, pay-per-use.",
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "apiKeyEnv": "SECURITY_AI_API_KEY"
+    }
+  },
+  "hunt": {
+    "lenses": [
+      "fallback",
+      "entropy",
+      "state"
+    ],
+    "$comment": "Second channel, not the main one. Semgrep and OSV cover parser and supply-chain better; what stays here is the class no static rule can express \u2014 a fallback that silently lowers a guarantee.",
+    "models": {
+      "fallback": "kimi-cli:kimi-k3",
+      "entropy": "kimi-cli:kimi-k3",
+      "state": "claude-cli:claude-opus-5"
+    }
+  },
+  "verify": {
+    "$comment": "k-of-n refutation. A finding survives only if fewer than refuteThreshold refuters break it. The harness never lets a model refute its own finding.",
+    "models": [
+      "claude-cli:claude-opus-5",
+      "kimi-cli:kimi-k3"
+    ],
+    "refuteThreshold": 2
+  },
+  "report": {
+    "$comment": "Deliberately a different model than the one that found the bug.",
+    "model": "claude-cli:claude-opus-5"
+  },
+  "gate": {
+    "$comment": "Severities that turn the check red, after verification.",
+    "blockOn": [
+      "critical",
+      "high",
+      "error"
+    ],
+    "maxDiffBytes": 400000
+  },
+  "triage": {
+    "$comment": "Stage 2 \u2014 filter over scanner output. Use the strongest model available: agentic triage helps little with weak backbones.",
+    "model": "claude-cli:claude-opus-5"
+  }
+}
