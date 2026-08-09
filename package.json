@@ -11,5 +11,5 @@
     "eval": "node security/eval/run.mjs",
     "eval:static": "node security/eval/run.mjs --no-ai"
   },
-  "license": "UNLICENSED"
+  "license": "MIT"
 }

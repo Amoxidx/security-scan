@@ -165,7 +165,7 @@ und dessen Fehlerrate **gemessen und dokumentiert** ist.
 Der Code unter `security/eval/corpus/` ist **absichtlich verwundbar**. Er dient als
 Messgrundlage, wird nie gebaut und nie ausgeliefert.
 
-Das Repository trägt derzeit **keine Lizenz**. Für ein öffentliches Repo bedeutet das
-rechtlich „alle Rechte vorbehalten" — niemand darf den Code nutzen, forken oder verändern.
-Falls das nicht gewollt ist, gehört eine `LICENSE` mit dem tatsächlichen Rechteinhaber hier
-hinein.
+Das Repository steht unter der [MIT-Lizenz](LICENSE). Übernehmen, verändern und weitergeben
+ist ausdrücklich erlaubt; der Copyright-Hinweis muss dabei erhalten bleiben. Der Code ist
+vollständig eigener Code — es sind keine fremden Bestandteile enthalten, deren Lizenz
+zusätzliche Auflagen mitbrächte.
