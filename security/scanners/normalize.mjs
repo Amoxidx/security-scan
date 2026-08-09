@@ -7,23 +7,57 @@
  * same files natively.
  *
  * Usage:
- *   node security/scanners/normalize.mjs --sarif <dir> [--diff <file>] [--out <file>]
+ *   node security/scanners/normalize.mjs --sarif <dir> [--diff <file>] [--out <file>] [--no-gate]
  *
  * --diff restricts findings to lines the pull request actually touched. Without it, every
  * pre-existing issue in the repository blocks the first PR that happens to run the gate.
  *
- * Exit: 0 clean, 1 blocking findings present.
+ * --no-gate records blocking findings but exits 0 for them. Real errors (missing SARIF
+ * directory, unreadable input, scanner status "error") still exit non-zero. --no-gate only
+ * suppresses the findings gate; it must not hide a tool that never produced a report. Use
+ * this when a later triage stage owns the findings decision.
+ *
+ * Exit: 0 clean (or --no-gate with findings), 1 blocking findings present (without --no-gate)
+ * or a real error (including a scanner that failed to run).
  */
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+// Flags that stand alone. Without this list the step-by-two parser would treat the next
+// argv token as a value and silently drop --sarif / --diff / --out when --no-gate is not last.
+const BOOLEAN_FLAGS = new Set(['no-gate']);
+
 const args = {};
-for (let i = 2; i < process.argv.length; i += 2) args[process.argv[i].slice(2)] = process.argv[i + 1];
+for (let i = 2; i < process.argv.length; ) {
+  const tok = process.argv[i];
+  if (!tok.startsWith('--')) {
+    i += 1;
+    continue;
+  }
+  const key = tok.slice(2);
+  if (BOOLEAN_FLAGS.has(key)) {
+    args[key] = true;
+    i += 1;
+    continue;
+  }
+  // Value-taking flag. If the next token is missing or another --flag, do not consume it —
+  // an unknown bare --flag must not swallow a following real argument.
+  const next = process.argv[i + 1];
+  if (next !== undefined && !next.startsWith('--')) {
+    args[key] = next;
+    i += 2;
+  } else {
+    args[key] = true;
+    i += 1;
+  }
+}
 
 const sarifDir = args.sarif || 'security-report/sarif';
 const outPath = args.out || 'security-report/findings.json';
 const blockOn = (args['block-on'] || 'error').split(',');
+// Boolean flag: present means normalize must not gate on blocking findings.
+const noGate = Boolean(args['no-gate']);
 
 // ---------------------------------------------------------------- diff scope
 
@@ -136,4 +170,16 @@ console.log(
 );
 for (const f of blocking) console.log(`  [${f.severity}] ${f.file}:${f.line} ${f.ruleId}`);
 
+// Tool failure is not a findings decision. status "error" means the scanner did not run;
+// that must fail the step even under --no-gate (which only suppresses the findings gate).
+// status "skipped" and "degraded" stay non-fatal: deliberate absence or partial output.
+const toolErrors = scanners.filter((s) => s.status === 'error');
+if (toolErrors.length) {
+  for (const s of toolErrors) {
+    console.error(`Scanner tool failure: ${s.tool} — ${s.detail}`);
+  }
+  process.exit(1);
+}
+
+if (noGate) process.exit(0);
 process.exit(blocking.length ? 1 : 0);

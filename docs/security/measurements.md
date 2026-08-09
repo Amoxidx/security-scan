@@ -293,6 +293,53 @@ Selbsttest gegen den eigenen Diff: grün. Probes: 5/5.
 
 ---
 
+## 2026-08-09 — Gate-Härtung (Review des Gates gegen sich selbst)
+
+Zwölf Befunde aus einem Review des Gates an eigenem Code (Parser-Fragilität, Exit-Pfade,
+Diff-Scope, Sentinel-Stripping, Workflow-Permissions, Versions-Pins, Testlücken). Die
+Korpus-Metriken bleiben unverändert; gemessen wurde die Regressionssuite und der
+unveränderte Scanner-Korpus.
+
+Kommando Korpus: `node security/eval/run.mjs --no-ai`  
+Kommando Suite: `bash security/gate/gate.test.sh`  
+Kommando Probes: `node security/prove/run-probes.mjs`
+
+| Metrik | Wert | Ziel | |
+|---|---|---|---|
+| Detection Rate | 60,0 % (6/10) | ≥ 50 % | erreicht |
+| Falsch-Positiv-Rate | 0,0 % (0/7) | ≤ 5 % | erreicht |
+| Blockiert aus falschem Grund | 0 | 0 | erreicht |
+| p95 Wall-Clock | 1,3 s | ≤ 480 s | erreicht |
+
+### Suite
+
+Nach der Härtungsrunde: **16/16** Fälle in `security/gate/gate.test.sh` (lokal, bash/node).
+Auf dem Vor-Fix-Stand des Argument-Parsers (Zweierschritt ohne boolesche Flags) fällt
+**1 von 16** Fällen — der Positionsfall `--no-gate` zuerst. Die übrigen fünfzehn, inkl. der
+neun Fälle aus der vorherigen Runde, bleiben grün, weil der Workflow `--no-gate` am Ende
+setzt und die anderen neuen Fälle andere Pfade prüfen.
+
+### Was sich nicht geändert hat
+
+Detection und Falsch-Positiv-Rate sind dieselben wie nach PR #2. Die Härtung adressiert
+Fragilität und Beweisbarkeit, nicht die Erkennungsrate am Korpus.
+
+### Ausdrücklich offen (nicht in diesem Lauf belegt)
+
+- **F1-Reset (Fork- vs. Branch-PR):** nie in einem echten GitHub-Actions-Lauf gegen einen
+  Fork-PR und einen Branch-PR im selben Repo geprüft. Lokal nur Code-Pfad gelesen.
+- **Versions-Pins:** SHA-Pins der Actions per API belegt, aber nie auf einem GitHub-Runner
+  installiert und ausgeführt. Ob die gepinnten Ref/SHA-Paare auf dem Runner auflösen, ist
+  ungemessen.
+
+Kein Eintrag hier behauptet, dass diese beiden Punkte grün sind.
+
+Probes: 5/5. Semgrep über das Repo ohne Korpus: Exit 0, 0 Parse-Fehler (lokal mit
+Semgrep 1.136.0).
+
+
+---
+
 ## Vorlage für weitere Einträge
 
 ```

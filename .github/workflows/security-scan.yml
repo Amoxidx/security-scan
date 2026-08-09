@@ -10,8 +10,10 @@ name: Security Scan
 # Mark "Security Scan / static" and "Security Scan / scanners" as required status checks in
 # the branch protection rules for master to make this a threshold rather than a suggestion.
 #
-# This workflow uses `pull_request`, not `pull_request_target`, on purpose: it executes code
-# paths from the pull request, so it must not have repository secrets in scope for forks.
+# This workflow uses `pull_request`, never the privileged trigger variant, so fork PRs never receive
+# repository secrets. That alone does not protect same-repo branch PRs: those still execute
+# whatever the PR head contains. The three jobs that run code from `security/` therefore
+# reset that tree to the base revision before use (see "Run the gate from the base revision").
 
 on:
   pull_request:
@@ -37,6 +39,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      - name: Run the gate from the base revision, not from the pull request
+        if: github.event_name == 'pull_request'
+        run: |
+          rm -rf security
+          git checkout "origin/${{ github.base_ref }}" -- security/
       - name: Deterministic checks
         run: |
           chmod +x security/gate/static-checks.sh
@@ -48,6 +55,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      - name: Run the gate from the base revision, not from the pull request
+        if: github.event_name == 'pull_request'
+        run: |
+          rm -rf security
+          git checkout "origin/${{ github.base_ref }}" -- security/
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
       - uses: actions/setup-python@v5
@@ -55,9 +67,11 @@ jobs:
 
       - name: Install scanners
         run: |
-          pip install --quiet semgrep
-          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
-          go install github.com/zricethezav/gitleaks/v8@latest
+          # Wheels must cover the job's Python (3.12). 1.136.0 is only up to 3.11; pip then
+          # falls back to the sdist and installs the wrapper without semgrep-core.
+          pip install --quiet semgrep==1.172.0
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.5.0
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       - name: Build diff
@@ -75,15 +89,15 @@ jobs:
           sarif_file: security-report/sarif
           category: security-scan
 
-      # Normalize does not gate on its own — triage decides. Without a triage model the
-      # findings pass through untriaged and the scanner severities still block, so this stage
-      # is never weaker than the scanners alone.
+      # Normalize with --no-gate: real errors (missing SARIF dir, etc.) still fail the step.
+      # Blocking findings are recorded but do not exit 1 here — triage owns that decision.
       - name: Normalize SARIF
         run: |
           node security/scanners/normalize.mjs \
             --sarif security-report/sarif \
             --diff /tmp/pr.diff \
-            --out security-report/findings.json || true
+            --out security-report/findings.json \
+            --no-gate
 
       - name: Triage and gate
         env:
@@ -125,6 +139,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      - name: Run the gate from the base revision, not from the pull request
+        if: github.event_name == 'pull_request'
+        run: |
+          rm -rf security
+          git checkout "origin/${{ github.base_ref }}" -- security/
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
 

@@ -34,6 +34,16 @@ import { tmpdir } from 'node:os';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
 const CORPUS = join(REPO, 'security/eval/corpus');
+const REDTEAM_CONFIG = JSON.parse(readFileSync(join(REPO, 'security/redteam/config.json'), 'utf8'));
+
+/** Clear every provider apiKeyEnv from config, plus the CI tokens a probe must never see. */
+function probeEnv() {
+  const env = { ...process.env, GITHUB_TOKEN: '', GH_TOKEN: '' };
+  for (const p of Object.values(REDTEAM_CONFIG.providers || {})) {
+    if (p.apiKeyEnv) env[p.apiKeyEnv] = '';
+  }
+  return env;
+}
 
 const args = {};
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -72,8 +82,8 @@ for (const c of cases) {
   const res = spawnSync('node', [join(HERE, 'exec-probe.mjs'), join(c.dir, 'probe.mjs'), work], {
     encoding: 'utf8',
     timeout,
-    // No repository token reaches the probe.
-    env: { ...process.env, GITHUB_TOKEN: '', GH_TOKEN: '', SECURITY_AI_API_KEY: '' },
+    // No repository token or model credentials reach the probe.
+    env: probeEnv(),
   });
   rmSync(work, { recursive: true, force: true });
 
