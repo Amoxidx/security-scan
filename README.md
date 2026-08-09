@@ -52,7 +52,7 @@ Die Herleitung im Detail:
 |---|---|---|---|
 | Detection Rate | 10,0 % | **60,0 %** (6/10) | ≥ 50 % |
 | Falsch-Positiv-Rate | 14,3 % | **0,0 %** (0/7) | ≤ 5 % |
-| p95 Wall-Clock | 0,8 s | 2,7 s | ≤ 480 s |
+| p95 Wall-Clock | 0,8 s | 1,3 s | ≤ 480 s |
 
 Die vier verbleibenden Misses verlangen semantisches Verständnis — „diese 32 Byte tragen nur
 32 Bit Entropie", „dieser Zähler wird bei Reconnect zurückgesetzt". Kein Pattern-Matching
@@ -64,7 +64,9 @@ erreicht das; dafür existiert der Lens-Kanal.
 
 ```
 security/
-├── gate/static-checks.sh        Stufe 0 — deterministisch, Sekunden, blockiert immer
+├── gate/
+│   ├── static-checks.sh         Stufe 0 — deterministisch, Sekunden, blockiert immer
+│   └── gate.test.sh             Regression der Gate-Härtung (bash/node, ohne Framework)
 ├── scanners/
 │   ├── semgrep/rules/           12 eigene Regeln für Klassen ohne Standardregel
 │   ├── run-scanners.sh          Semgrep + OSV + Gitleaks → SARIF
@@ -83,6 +85,7 @@ security/
 
 .claude/settings.json            PreToolUse-Hook
 .github/workflows/security-scan.yml
+.github/CODEOWNERS               Review-Pflicht für Gate-, Scanner- und Workflow-Pfade
 docs/security/
 ```
 

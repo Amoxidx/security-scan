@@ -23,14 +23,40 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+// Flags that stand alone. Without this list the step-by-two parser would treat the next
+// argv token as a value and silently drop --sarif / --diff / --out when --no-gate is not last.
+const BOOLEAN_FLAGS = new Set(['no-gate']);
+
 const args = {};
-for (let i = 2; i < process.argv.length; i += 2) args[process.argv[i].slice(2)] = process.argv[i + 1];
+for (let i = 2; i < process.argv.length; ) {
+  const tok = process.argv[i];
+  if (!tok.startsWith('--')) {
+    i += 1;
+    continue;
+  }
+  const key = tok.slice(2);
+  if (BOOLEAN_FLAGS.has(key)) {
+    args[key] = true;
+    i += 1;
+    continue;
+  }
+  // Value-taking flag. If the next token is missing or another --flag, do not consume it —
+  // an unknown bare --flag must not swallow a following real argument.
+  const next = process.argv[i + 1];
+  if (next !== undefined && !next.startsWith('--')) {
+    args[key] = next;
+    i += 2;
+  } else {
+    args[key] = true;
+    i += 1;
+  }
+}
 
 const sarifDir = args.sarif || 'security-report/sarif';
 const outPath = args.out || 'security-report/findings.json';
 const blockOn = (args['block-on'] || 'error').split(',');
 // Boolean flag: present means normalize must not gate on blocking findings.
-const noGate = process.argv.includes('--no-gate');
+const noGate = Boolean(args['no-gate']);
 
 // ---------------------------------------------------------------- diff scope
 
