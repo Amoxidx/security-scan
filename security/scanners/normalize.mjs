@@ -13,11 +13,12 @@
  * pre-existing issue in the repository blocks the first PR that happens to run the gate.
  *
  * --no-gate records blocking findings but exits 0 for them. Real errors (missing SARIF
- * directory, unreadable input) still exit non-zero. Use this when a later triage stage owns
- * the gate decision.
+ * directory, unreadable input, scanner status "error") still exit non-zero. --no-gate only
+ * suppresses the findings gate; it must not hide a tool that never produced a report. Use
+ * this when a later triage stage owns the findings decision.
  *
  * Exit: 0 clean (or --no-gate with findings), 1 blocking findings present (without --no-gate)
- * or a real error.
+ * or a real error (including a scanner that failed to run).
  */
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
@@ -168,6 +169,17 @@ console.log(
   `${all.length} raw -> ${deduped.length} deduped -> ${scoped.length} in diff scope -> ${blocking.length} blocking`
 );
 for (const f of blocking) console.log(`  [${f.severity}] ${f.file}:${f.line} ${f.ruleId}`);
+
+// Tool failure is not a findings decision. status "error" means the scanner did not run;
+// that must fail the step even under --no-gate (which only suppresses the findings gate).
+// status "skipped" and "degraded" stay non-fatal: deliberate absence or partial output.
+const toolErrors = scanners.filter((s) => s.status === 'error');
+if (toolErrors.length) {
+  for (const s of toolErrors) {
+    console.error(`Scanner tool failure: ${s.tool} — ${s.detail}`);
+  }
+  process.exit(1);
+}
 
 if (noGate) process.exit(0);
 process.exit(blocking.length ? 1 : 0);

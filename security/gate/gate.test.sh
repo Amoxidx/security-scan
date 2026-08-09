@@ -752,6 +752,78 @@ EOF
   fi
 }
 
+# ---------------------------------------------------------------- 17–19: scanner status error fails normalize (H2)
+
+echo "=== normalize scanner tool failure (H2) ==="
+
+# Empty SARIF dir + scanners.json only — no findings; the exit code is about tool status.
+write_status_only_sarif() {
+  local dir="$1" status="$2" detail="$3"
+  mkdir -p "$dir"
+  # detail may contain spaces; build JSON with node so quoting stays boring.
+  node -e "
+    const fs = require('fs');
+    fs.writeFileSync(process.argv[1], JSON.stringify([{
+      tool: 'semgrep',
+      status: process.argv[2],
+      detail: process.argv[3],
+    }]));
+  " "$dir/scanners.json" "$status" "$detail"
+}
+
+# 17. status error + --no-gate -> exit != 0; output names tool and detail.
+{
+  NDIR="$WORK/h2-error"
+  write_status_only_sarif "$NDIR/sarif" "error" "exit 1, no report"
+  mkdir -p "$NDIR/out"
+  run node "$NORMALIZE" \
+    --sarif "$NDIR/sarif" \
+    --out "$NDIR/out/findings.json" \
+    --no-gate
+  if [ "$RUN_RC" -ne 0 ] \
+    && echo "$RUN_OUT" | grep -q 'semgrep' \
+    && echo "$RUN_OUT" | grep -q 'exit 1, no report'; then
+    case_result "H2: status error + --no-gate exits non-zero with tool and detail" 1
+  else
+    case_result "H2: status error + --no-gate exits non-zero with tool and detail" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# 18. Counter: status skipped + --no-gate -> exit 0
+{
+  NDIR="$WORK/h2-skipped"
+  write_status_only_sarif "$NDIR/sarif" "skipped" "no lockfile"
+  mkdir -p "$NDIR/out"
+  run node "$NORMALIZE" \
+    --sarif "$NDIR/sarif" \
+    --out "$NDIR/out/findings.json" \
+    --no-gate
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "H2-counter: status skipped + --no-gate exits 0" 1
+  else
+    case_result "H2-counter: status skipped + --no-gate exits 0" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# 19. Counter: status ok + --no-gate -> exit 0
+{
+  NDIR="$WORK/h2-ok"
+  write_status_only_sarif "$NDIR/sarif" "ok" "0 result(s)"
+  mkdir -p "$NDIR/out"
+  run node "$NORMALIZE" \
+    --sarif "$NDIR/sarif" \
+    --out "$NDIR/out/findings.json" \
+    --no-gate
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "H2-counter: status ok + --no-gate exits 0" 1
+  else
+    case_result "H2-counter: status ok + --no-gate exits 0" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
 # ---------------------------------------------------------------- summary
 
 echo
