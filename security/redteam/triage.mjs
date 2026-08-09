@@ -81,22 +81,49 @@ function codeContext(file, line, radius = 25) {
 
 const BLOCKING_VERDICTS = new Set(['true_positive', 'needs_human']);
 
+const UNTRUSTED_BEGIN = '<<<UNTRUSTED_INPUT_BEGIN>>>';
+const UNTRUSTED_END = '<<<UNTRUSTED_INPUT_END>>>';
+
+/** Strip sentinel markers from untrusted content so an attacker cannot close the envelope. */
+function wrapUntrusted(text) {
+  const cleaned = String(text)
+    .split(UNTRUSTED_BEGIN).join('')
+    .split(UNTRUSTED_END).join('');
+  return `${UNTRUSTED_BEGIN}\n${cleaned}\n${UNTRUSTED_END}`;
+}
+
 async function triage(finding) {
   const user = triagePrompt
-    .replace('{{FINDING}}', JSON.stringify(finding, null, 2))
-    .replace('{{CODE}}', `\n\`\`\`\n${codeContext(finding.file, finding.line)}\n\`\`\`\n`)
-    .replace('{{CONTEXT}}', `Rule: ${finding.ruleId}\nCWE: ${finding.cwe || 'n/a'}\nScanner: ${finding.tool}`);
+    .replace('{{FINDING}}', wrapUntrusted(JSON.stringify(finding, null, 2)))
+    .replace('{{CODE}}', wrapUntrusted(codeContext(finding.file, finding.line)))
+    .replace('{{CONTEXT}}', wrapUntrusted(`Rule: ${finding.ruleId}\nCWE: ${finding.cwe || 'n/a'}\nScanner: ${finding.tool}`));
 
   try {
     const out = await complete(config, target, systemPrompt, user);
     const parsed = parseJson(out);
     if (!parsed || !parsed.verdict) {
-      return { ...finding, verdict: 'needs_human', reason: 'unparseable triage response' };
+      return {
+        ...finding,
+        verdict: 'needs_human',
+        reason: 'unparseable triage response',
+        scannerSeverity: finding.severity,
+      };
     }
-    return { ...finding, ...parsed, severity: parsed.severity || finding.severity };
+    // Model severity is a priority hint; the gate must never be weaker than the scanner.
+    return {
+      ...finding,
+      ...parsed,
+      scannerSeverity: finding.severity,
+      severity: parsed.severity || finding.severity,
+    };
   } catch (err) {
     // An error must never look like a dismissal.
-    return { ...finding, verdict: 'needs_human', reason: `triage error: ${err.message}` };
+    return {
+      ...finding,
+      verdict: 'needs_human',
+      reason: `triage error: ${err.message}`,
+      scannerSeverity: finding.severity,
+    };
   }
 }
 
@@ -113,9 +140,14 @@ function parseJson(text) {
 
 const triaged = await Promise.all(findings.map(triage));
 
+const blockOn = config.gate.blockOn || ['critical', 'high', 'error'];
 const dropped = triaged.filter((f) => f.verdict === 'false_positive');
 const kept = triaged.filter((f) => BLOCKING_VERDICTS.has(f.verdict));
-const blocking = kept.filter((f) => (config.gate.blockOn || ['critical', 'high', 'error']).includes(f.severity));
+// Block if model severity OR original scanner severity is in blockOn — never weaker than
+// the passthrough path that runs when no triage model is available.
+const blocking = kept.filter(
+  (f) => blockOn.includes(f.severity) || blockOn.includes(f.scannerSeverity || f.severity)
+);
 
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, JSON.stringify({ triaged, dropped: dropped.length, blocking: blocking.length }, null, 2));

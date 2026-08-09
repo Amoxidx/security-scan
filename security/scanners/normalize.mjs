@@ -7,12 +7,17 @@
  * same files natively.
  *
  * Usage:
- *   node security/scanners/normalize.mjs --sarif <dir> [--diff <file>] [--out <file>]
+ *   node security/scanners/normalize.mjs --sarif <dir> [--diff <file>] [--out <file>] [--no-gate]
  *
  * --diff restricts findings to lines the pull request actually touched. Without it, every
  * pre-existing issue in the repository blocks the first PR that happens to run the gate.
  *
- * Exit: 0 clean, 1 blocking findings present.
+ * --no-gate records blocking findings but exits 0 for them. Real errors (missing SARIF
+ * directory, unreadable input) still exit non-zero. Use this when a later triage stage owns
+ * the gate decision.
+ *
+ * Exit: 0 clean (or --no-gate with findings), 1 blocking findings present (without --no-gate)
+ * or a real error.
  */
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
@@ -24,6 +29,8 @@ for (let i = 2; i < process.argv.length; i += 2) args[process.argv[i].slice(2)] 
 const sarifDir = args.sarif || 'security-report/sarif';
 const outPath = args.out || 'security-report/findings.json';
 const blockOn = (args['block-on'] || 'error').split(',');
+// Boolean flag: present means normalize must not gate on blocking findings.
+const noGate = process.argv.includes('--no-gate');
 
 // ---------------------------------------------------------------- diff scope
 
@@ -136,4 +143,5 @@ console.log(
 );
 for (const f of blocking) console.log(`  [${f.severity}] ${f.file}:${f.line} ${f.ruleId}`);
 
+if (noGate) process.exit(0);
 process.exit(blocking.length ? 1 : 0);

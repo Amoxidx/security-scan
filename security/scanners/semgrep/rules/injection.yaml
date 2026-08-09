@@ -13,6 +13,10 @@ rules:
       - pattern: execSync(`...${$X}...`, ...)
       - pattern: exec($A + $B, ...)
       - pattern: execSync($A + $B, ...)
+      - pattern: spawn($SHELL, ["-c", `...${$X}...`], ...)
+      - pattern: spawnSync($SHELL, ["-c", `...${$X}...`], ...)
+      - pattern: spawn($SHELL, ["-c", $A + $B], ...)
+      - pattern: spawnSync($SHELL, ["-c", $A + $B], ...)
 
   - id: dynamic-code-execution
     languages: [javascript, typescript]

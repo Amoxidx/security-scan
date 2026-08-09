@@ -4,11 +4,14 @@ A static analyser flagged the code below. Static analysis over-reports by constr
 sees patterns, not reachability. Your job is to decide whether this particular finding
 describes a real problem **in this codebase**.
 
-```
-FINDING: {{FINDING}}
-CODE:    {{CODE}}
-CONTEXT: {{CONTEXT}}
-```
+FINDING:
+{{FINDING}}
+
+CODE:
+{{CODE}}
+
+CONTEXT:
+{{CONTEXT}}
 
 ## The three verdicts
 
@@ -32,7 +35,9 @@ does not decide, escalate.
 
 Never answer `false_positive` because a finding is *low severity* or *unlikely to be
 exploited*. Those are triage-priority questions, not truth questions. Downgrade the severity
-instead and keep the verdict honest.
+instead and keep the verdict honest. Downgrading severity changes urgency and priority only;
+it does not hide the finding from the gate. A `needs_human` or `true_positive` verdict still
+surfaces the finding regardless of the severity label you assign.
 
 ## Specific traps
 

@@ -13,6 +13,15 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 
+/** Env vars named by any provider's apiKeyEnv, cleared so child processes cannot inherit them. */
+export function scrubbedEnv(config, base = process.env, extra = {}) {
+  const env = { ...base, ...extra };
+  for (const p of Object.values(config.providers || {})) {
+    if (p.apiKeyEnv) env[p.apiKeyEnv] = '';
+  }
+  return env;
+}
+
 // ---------------------------------------------------------------- resolution
 
 /** 'provider:model' -> {providerName, model}; a bare id uses defaultProvider. */
@@ -33,7 +42,8 @@ export function unavailableReason(config, name) {
     reason = `no provider named '${name}' in config`;
   } else if (p.type === 'cli') {
     const bin = p.command[0];
-    if (spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).status !== 0) {
+    // Pass bin as $1 so a name with shell metacharacters cannot inject into -c.
+    if (spawnSync('sh', ['-c', 'command -v "$1"', 'sh', bin], { encoding: 'utf8' }).status !== 0) {
       reason = `'${bin}' not on PATH`;
     }
   } else if (!process.env[p.apiKeyEnv]) {
@@ -79,7 +89,7 @@ async function withSlot(limit, fn) {
 // ---------------------------------------------------------------- transports
 
 /** A subscription coding agent in headless mode. Prompt on stdin, answer on stdout. */
-function callCli(target, system, user) {
+function callCli(config, target, system, user) {
   const { provider, model } = target;
   const argv = [...provider.command.slice(1)];
   if (provider.modelFlag) argv.push(provider.modelFlag, model);
@@ -88,7 +98,7 @@ function callCli(target, system, user) {
     const child = spawn(provider.command[0], argv, {
       stdio: ['pipe', 'pipe', 'pipe'],
       // The agent must not inherit the gate's own model credentials.
-      env: { ...process.env, SECURITY_AI_API_KEY: '' },
+      env: scrubbedEnv(config),
     });
     let out = '';
     let err = '';
@@ -148,7 +158,7 @@ export async function complete(config, target, system, user, { retries = 3 } = {
     for (let attempt = 0; attempt < retries; attempt += 1) {
       try {
         return target.provider.type === 'cli'
-          ? await callCli(target, system, user)
+          ? await callCli(config, target, system, user)
           : await callHttp(target, system, user);
       } catch (err) {
         if (attempt === retries - 1) throw err;

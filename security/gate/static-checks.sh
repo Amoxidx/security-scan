@@ -20,13 +20,34 @@ fail() { printf '  \033[31mBLOCK\033[0m  %s\n' "$*"; FAIL=1; }
 warn() { printf '  \033[33mnote\033[0m   %s\n' "$*"; }
 ok()   { printf '  \033[32mok\033[0m     %s\n' "$*"; }
 
-CHANGED=$(git diff --name-only --diff-filter=d "$BASE"...HEAD)
+# An unresolvable base is a blocking configuration error, not an empty result.
+if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
+  fail "base ref does not resolve: $BASE"
+  printf '\033[31mStatic security gate: BLOCKED\033[0m\n'
+  exit 1
+fi
 
+if ! CHANGED=$(git diff --name-only --diff-filter=d "$BASE"...HEAD); then
+  fail "git diff failed against base ref: $BASE"
+  printf '\033[31mStatic security gate: BLOCKED\033[0m\n'
+  exit 1
+fi
+
+# Does not call fail() — callers that capture stdout via $(...) would otherwise swallow the
+# BLOCK line into the added-lines payload. Return non-zero and let the caller fail loudly.
 added_lines() { # added_lines [pathspec...] -> the '+' lines of the diff, without headers
-  git diff --unified=0 "$BASE"...HEAD -- "$@" | grep -E '^\+' | grep -Ev '^\+\+\+' || true
+  local diff_out
+  if ! diff_out=$(git diff --unified=0 "$BASE"...HEAD -- "$@"); then
+    return 1
+  fi
+  echo "$diff_out" | grep -E '^\+' | grep -Ev '^\+\+\+' || true
 }
 
-ADDED=$(added_lines .)
+if ! ADDED=$(added_lines .); then
+  fail "git diff failed while collecting added lines against: $BASE"
+  printf '\033[31mStatic security gate: BLOCKED\033[0m\n'
+  exit 1
+fi
 
 # Prose is not code, and neither is a rule that *describes* a dangerous pattern or a fixture
 # that deliberately contains one. A checker that flags its own rule definitions and its own
@@ -35,12 +56,16 @@ ADDED=$(added_lines .)
 # The first CI run of this gate proved the point: it blocked its own pull request three times,
 # twice on its own material — the Semgrep rule listing "postinstall", and a corpus fixture
 # whose whole purpose is to contain the string `curl | sh`.
-CODE_ADDED=$(added_lines . \
+if ! CODE_ADDED=$(added_lines . \
   ':(exclude)*.md' \
   ':(exclude)security/gate/*' \
   ':(exclude)security/scanners/semgrep/rules/*' \
   ':(exclude)security/eval/corpus/*' \
-  ':(exclude)security/redteam/prompts/*')
+  ':(exclude)security/redteam/prompts/*'); then
+  fail "git diff failed while collecting added lines against: $BASE"
+  printf '\033[31mStatic security gate: BLOCKED\033[0m\n'
+  exit 1
+fi
 
 if [ -z "$CHANGED" ]; then
   echo "No changed files against $BASE."
@@ -53,7 +78,9 @@ echo "$CHANGED" | sed 's/^/  /'
 # ---------------------------------------------------------------- secrets
 say '1. Secret material in added lines'
 # Deliberately narrow patterns. A noisy secret scanner gets muted, which is worse than none.
-SECRET_PATTERNS='(AKIA[0-9A-Z]{16})|(gh[pousr]_[A-Za-z0-9]{36,})|(sk-[A-Za-z0-9]{32,})|(xox[baprs]-[A-Za-z0-9-]{10,})|(-----BEGIN [A-Z ]*PRIVATE KEY-----)|(eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})'
+# sk-ant- / sk-proj- accept hyphen/underscore in the body; plain sk- stays alphanumeric only
+# so prose like "sk-" does not fire.
+SECRET_PATTERNS='(AKIA[0-9A-Z]{16})|(gh[pousr]_[A-Za-z0-9]{36,})|(sk-ant-[A-Za-z0-9_-]{32,})|(sk-proj-[A-Za-z0-9_-]{32,})|(sk-[A-Za-z0-9]{32,})|(xox[baprs]-[A-Za-z0-9-]{10,})|(-----BEGIN [A-Z ]*PRIVATE KEY-----)|(eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})'
 if HITS=$(echo "$ADDED" | grep -nE "$SECRET_PATTERNS"); then
   fail "possible credential in added lines:"
   echo "$HITS" | sed 's/^/         /' | cut -c1-160
