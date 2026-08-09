@@ -31,18 +31,31 @@ record() { entries+=("{\"tool\":\"$1\",\"status\":\"$2\",\"detail\":\"$3\"}"); }
 printf '\nSemgrep\n'
 if command -v semgrep >/dev/null 2>&1; then
   # --metrics=off keeps the scan offline; the registry is not consulted, only local rules.
-  semgrep --metrics=off --quiet --config "$RULES" --sarif --output "$OUT/semgrep.sarif" \
+  semgrep --metrics=off --disable-version-check --quiet --config "$RULES" --sarif --output "$OUT/semgrep.sarif" \
     "$TARGET" >>"$OUT/.log" 2>&1
   rc=$?
-  # semgrep exits 1 when it found something and 2+ on a real error. Treating "found
-  # something" as a failure would mark the scanner broken exactly when it works.
-  if [ $rc -le 1 ]; then
-    n=$(grep -o '"ruleId"' "$OUT/semgrep.sarif" 2>/dev/null | wc -l | tr -d ' ')
+  # semgrep exits 1 when it found something, and 2 for anything from "a rule failed to
+  # parse" to "the scan died". Both previous readings of this were wrong: treating 2 as
+  # success hides a broken rule, treating it as failure hides seven valid findings that
+  # were produced anyway. So judge by the report, and report the exit code separately.
+  n=$(grep -o '"ruleId"' "$OUT/semgrep.sarif" 2>/dev/null | wc -l | tr -d ' ')
+  ruleerr=$(grep -o 'Rule parse error in rule [^"\\]*' "$OUT/semgrep.sarif" 2>/dev/null | head -5)
+
+  if [ ! -s "$OUT/semgrep.sarif" ]; then
+    note "error (exit $rc) — no report produced, see $OUT/.log"
+    record semgrep error "exit $rc, no report"
+  elif [ -n "$ruleerr" ]; then
+    # A rule that does not compile is a silently missing check, which is the failure mode
+    # this whole gate exists to avoid. Loud, but not fatal: the other rules still ran.
+    note "DEGRADED — $n result(s), but a rule failed to compile and did NOT run:"
+    printf '%s\n' "$ruleerr" | sed 's/^/    /' | tee -a "$OUT/.log"
+    record semgrep degraded "$n results, rule parse error"
+  elif [ $rc -le 1 ]; then
     note "ok — $n result(s)"
     record semgrep ok "$n results"
   else
-    note "error (exit $rc) — see $OUT/.log"
-    record semgrep error "exit $rc"
+    note "ok with warnings (exit $rc) — $n result(s), see $OUT/.log"
+    record semgrep ok "$n results, exit $rc"
   fi
 else
   note "skipped — semgrep not installed (pip install semgrep)"

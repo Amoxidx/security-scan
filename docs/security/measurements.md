@@ -231,6 +231,68 @@ Zusätzlich neu grün: das Gate gegen den eigenen Diff.
 
 ---
 
+## 2026-08-09 — PR #2: die Korrekturen halten, und ein toter Check kommt ans Licht
+
+Alle sieben Checks grün: `static`, `scanners`, `codeql`, `ai-review` plus die drei
+Code-Scanning-Analysen (Semgrep OSS, Gitleaks, CodeQL). Beide Korrekturen aus PR #1
+bestätigt — `static` läuft durch, und `ai-review` wird nicht mehr stillgelegt.
+
+### Was der Log offenlegte, obwohl der Job grün war
+
+```
+Scanners not contributing:
+  semgrep: error — exit 2
+  osv: skipped — no lockfile
+7 raw -> 7 deduped -> 0 in diff scope -> 0 blocking
+```
+
+Semgrep meldete `error`, hatte aber **sieben Findings geliefert**. Die Ursache lokal
+reproduziert:
+
+> `Rule parse error in rule crypto-fallback-in-catch: Invalid pattern for JavaScript`
+
+**Eine der zwölf Regeln hat nie kompiliert und ist nie gelaufen** — ausgerechnet die für die
+COLDCARD-Klasse. Der Regelsatz gab deshalb durchgehend Exit 2 zurück, während die übrigen
+Regeln normal Ergebnisse produzierten. Zwei Gründe, warum das monatelang hätte unentdeckt
+bleiben können:
+
+1. `catch(...)` ist keine gültige JavaScript-Pattern-Syntax. Semgrep verwirft die Regel und
+   scannt weiter.
+2. Mein Exit-Code-Handling war **in beide Richtungen falsch**: erst galt 2 als Erfolg (versteckt
+   die kaputte Regel), dann als Fehler (versteckt sieben gültige Findings).
+
+Behoben: Die Regel ist als `Math.random()` **innerhalb** eines `catch` formuliert — auch
+robuster, denn `...` erreicht keine Ausdrücke, die in einer Schleife im Catch-Block liegen;
+selbst eine kompilierende Fassung der alten Form hätte den Korpus-Fall verfehlt. Der
+Orchestrator urteilt jetzt nach dem **Bericht**, nicht nach dem Exit-Code, und meldet einen
+Regel-Parse-Fehler als eigenen Status `degraded` — laut, aber nicht fatal.
+
+### Zweiter Fund: Semgrep hing 98 Sekunden im Netzwerk
+
+Ein Korpus-Fall brauchte 1 m 40 s bei 1,9 s CPU — Semgrep wartete auf seinen
+Versionscheck gegen `semgrep.dev`. Mit `--disable-version-check`: **3 s**. In Orchestrator und
+beiden Hooks ergänzt. Ein Scanner in einem blockierenden Gate darf nicht auf einen fremden
+Server warten.
+
+### Messung nach den Korrekturen
+
+| Metrik | Wert | Ziel | |
+|---|---|---|---|
+| Detection Rate | 60,0 % (6/10) | ≥ 50 % | erreicht |
+| Falsch-Positiv-Rate | 0,0 % (0/7) | ≤ 5 % | erreicht |
+| Blockiert aus falschem Grund | 0 | 0 | erreicht |
+| p95 Wall-Clock | 2,6 s | ≤ 480 s | erreicht |
+
+Unverändert — die reparierte Regel trifft denselben Fall (`001-prng-fallback`), den
+`weak-random-in-security-context` schon fand. Der Gewinn ist keine höhere Zahl, sondern
+**eine Regel, die tatsächlich existiert**: Semgrep meldet jetzt 8 statt 7 Findings über das
+Repo, und der Regelsatz kompiliert fehlerfrei.
+
+Selbsttest gegen den eigenen Diff: grün. Probes: 5/5.
+
+
+---
+
 ## Vorlage für weitere Einträge
 
 ```

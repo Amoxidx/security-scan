@@ -16,7 +16,7 @@ STAGED=$(git diff --cached --name-only --diff-filter=d)
 if command -v semgrep >/dev/null 2>&1; then
   # Only the staged files, only local rules, no network.
   # shellcheck disable=SC2086
-  semgrep --metrics=off --quiet --error \
+  semgrep --metrics=off --disable-version-check --quiet --error \
     --config "$ROOT/security/scanners/semgrep/rules" $STAGED
   rc=$?
   # 1 = findings, 2+ = the scan failed. A broken scanner must be loud, not blocking.

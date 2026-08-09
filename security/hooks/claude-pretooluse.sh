@@ -25,7 +25,7 @@ case "$FILE" in
 esac
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-OUT=$(semgrep --metrics=off --quiet --error --config "$ROOT/security/scanners/semgrep/rules" "$FILE" 2>&1)
+OUT=$(semgrep --metrics=off --disable-version-check --quiet --error --config "$ROOT/security/scanners/semgrep/rules" "$FILE" 2>&1)
 RC=$?
 
 # semgrep: 0 = clean, 1 = findings, 2+ = the scan itself failed. Only 1 is a reason to block.
