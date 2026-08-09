@@ -111,18 +111,33 @@ echo "=== static-checks (F2, F4) ==="
   fi
 }
 
+# Secret-shaped fixtures: prefix and body stay separate in source so no ADDED line
+# matches the gate patterns. Runtime expansion (${PFX}${BODY}) writes the real value;
+# $ and { are outside every secret character class. Assert the written file still
+# matches the gate pattern before calling the gate.
+FX_ANT_PFX='sk-ant-'
+FX_ANT_BODY='api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh-AAAAAA'
+FX_PROJ_PFX='sk-proj-'
+FX_PROJ_BODY='AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEf'
+FX_GHP_PFX='ghp_'
+FX_GHP_BODY='AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+
 # 3. F4: sk-ant- key blocks
 {
   make_repo "$WORK/f4-ant"
   BASE_SHA="$(git -C "$WORK/f4-ant" rev-parse HEAD)"
   commit_file "$WORK/f4-ant" "src/keys.js" \
-    "const k = 'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh-AAAAAA';" \
+    "const k = '${FX_ANT_PFX}${FX_ANT_BODY}';" \
     "add ant key"
-  run bash -c "cd '$WORK/f4-ant' && bash security/gate/static-checks.sh '$BASE_SHA'"
-  if [ "$RUN_RC" -ne 0 ]; then
-    case_result "F4: sk-ant- key blocks" 1
+  if ! grep -qE 'sk-ant-[A-Za-z0-9_-]{32,}' "$WORK/f4-ant/src/keys.js"; then
+    case_result "F4: sk-ant- key blocks" 0 "written fixture lacks sk-ant- secret pattern"
   else
-    case_result "F4: sk-ant- key blocks" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+    run bash -c "cd '$WORK/f4-ant' && bash security/gate/static-checks.sh '$BASE_SHA'"
+    if [ "$RUN_RC" -ne 0 ]; then
+      case_result "F4: sk-ant- key blocks" 1
+    else
+      case_result "F4: sk-ant- key blocks" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+    fi
   fi
 }
 
@@ -131,13 +146,17 @@ echo "=== static-checks (F2, F4) ==="
   make_repo "$WORK/f4-proj"
   BASE_SHA="$(git -C "$WORK/f4-proj" rev-parse HEAD)"
   commit_file "$WORK/f4-proj" "src/keys.js" \
-    "const k = 'sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEf';" \
+    "const k = '${FX_PROJ_PFX}${FX_PROJ_BODY}';" \
     "add proj key"
-  run bash -c "cd '$WORK/f4-proj' && bash security/gate/static-checks.sh '$BASE_SHA'"
-  if [ "$RUN_RC" -ne 0 ]; then
-    case_result "F4: sk-proj- key blocks" 1
+  if ! grep -qE 'sk-proj-[A-Za-z0-9_-]{32,}' "$WORK/f4-proj/src/keys.js"; then
+    case_result "F4: sk-proj- key blocks" 0 "written fixture lacks sk-proj- secret pattern"
   else
-    case_result "F4: sk-proj- key blocks" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+    run bash -c "cd '$WORK/f4-proj' && bash security/gate/static-checks.sh '$BASE_SHA'"
+    if [ "$RUN_RC" -ne 0 ]; then
+      case_result "F4: sk-proj- key blocks" 1
+    else
+      case_result "F4: sk-proj- key blocks" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+    fi
   fi
 }
 
@@ -146,13 +165,17 @@ echo "=== static-checks (F2, F4) ==="
   make_repo "$WORK/f4-ghp"
   BASE_SHA="$(git -C "$WORK/f4-ghp" rev-parse HEAD)"
   commit_file "$WORK/f4-ghp" "src/keys.js" \
-    "const t = 'ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789';" \
+    "const t = '${FX_GHP_PFX}${FX_GHP_BODY}';" \
     "add ghp"
-  run bash -c "cd '$WORK/f4-ghp' && bash security/gate/static-checks.sh '$BASE_SHA'"
-  if [ "$RUN_RC" -ne 0 ]; then
-    case_result "counter: ghp_ still blocks" 1
+  if ! grep -qE 'gh[pousr]_[A-Za-z0-9]{36,}' "$WORK/f4-ghp/src/keys.js"; then
+    case_result "counter: ghp_ still blocks" 0 "written fixture lacks ghp_ secret pattern"
   else
-    case_result "counter: ghp_ still blocks" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+    run bash -c "cd '$WORK/f4-ghp' && bash security/gate/static-checks.sh '$BASE_SHA'"
+    if [ "$RUN_RC" -ne 0 ]; then
+      case_result "counter: ghp_ still blocks" 1
+    else
+      case_result "counter: ghp_ still blocks" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+    fi
   fi
 }
 
