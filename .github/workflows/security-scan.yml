@@ -7,8 +7,10 @@ name: Security Scan
 #   codeql    interprocedural taint analysis, uploads to code scanning
 #   ai-review the lens channel, blocks only on findings that survived verification
 #
-# Mark "Security Scan / static" and "Security Scan / scanners" as required status checks in
-# the branch protection rules for master to make this a threshold rather than a suggestion.
+# Mark "static" and "scanners" as required status checks in the branch protection rules for
+# master to make this a threshold rather than a suggestion. Those are the names GitHub
+# publishes — the job names, without the workflow name in front. Requiring a name no job
+# produces does not fail a pull request, it leaves it pending forever.
 #
 # This workflow uses `pull_request`, never the privileged trigger variant, so fork PRs never receive
 # repository secrets. That alone does not protect same-repo branch PRs: those still execute
