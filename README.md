@@ -46,13 +46,15 @@ Die Herleitung im Detail:
 | 6 — Hooks (3 Ebenen) | **fertig** — Agent, Commit, CI |
 | 7 — Scharfschalten | offen, wartet auf Phase-2-Messung |
 
-**Aktuell gemessen** (statisches Gate + Scanner, ohne AI-Stufe — [Details](docs/security/measurements.md)):
+**Aktuell gemessen** (statisches Gate + Scanner, ohne AI-Stufe — [Details](docs/security/measurements.md)).
+Die Spalte „Schwelle“ ist erzwungen: `eval/run.mjs` endet mit Exit ≠ 0, wenn Detection oder
+Falsch-Positiv-Rate sie reißt (CI-Job `verify`).
 
-| Metrik | Baseline | Jetzt | Ziel |
+| Metrik | Baseline | Jetzt | Schwelle |
 |---|---|---|---|
 | Detection Rate | 10,0 % | **60,0 %** (6/10) | ≥ 50 % |
 | Falsch-Positiv-Rate | 14,3 % | **0,0 %** (0/7) | ≤ 5 % |
-| p95 Wall-Clock | 0,8 s | 1,3 s | ≤ 480 s |
+| p95 Wall-Clock | 0,8 s | 1,3 s | ≤ 480 s (nicht erzwungen) |
 
 Die vier verbleibenden Misses verlangen semantisches Verständnis — „diese 32 Byte tragen nur
 32 Bit Entropie", „dieser Zähler wird bei Reconnect zurückgesetzt". Kein Pattern-Matching
@@ -116,7 +118,7 @@ node security/prove/run-probes.mjs
 # zwei Falsch-Positive lagen genau hier und in keinem Korpus-Fall.
 security/gate/static-checks.sh master
 
-# Messung
+# Messung — endet mit Exit ≠ 0, wenn Detection < 50 % oder Falsch-Positive > 5 %
 node security/eval/run.mjs --no-ai      # ohne AI-Stufe
 node security/eval/run.mjs              # vollständig
 

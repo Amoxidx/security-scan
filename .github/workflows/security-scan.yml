@@ -188,3 +188,39 @@ jobs:
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number, body: payload });
             }
+
+  # verify — regression suite, probes, and corpus thresholds.
+  #
+  # Unlike static, scanners, and ai-review, this job must NOT reset security/ to the base
+  # revision. Those three jobs are the authority threshold: a pull request must not rewrite
+  # its own gate. verify checks whether the PR's change breaks the suite, the probes, or the
+  # measured rates — resetting to base would measure the base against itself and make the job
+  # useless. Authority stays with static and scanners (which still reset); verify is a
+  # regression check only, not an authority instance.
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install Semgrep
+        run: |
+          # Same pin as the scanners job. Wheels must cover the job's Python (3.12).
+          # osv-scanner and gitleaks are intentionally not installed: the documented 60 %
+          # detection baseline was measured with Semgrep alone. Adding them would move the
+          # comparison base; re-measure a new baseline before installing them here.
+          pip install --quiet semgrep==1.172.0
+
+      - name: Gate regression suite
+        run: bash security/gate/gate.test.sh
+
+      - name: Probes
+        run: node security/prove/run-probes.mjs
+
+      - name: Corpus thresholds
+        run: node security/eval/run.mjs --no-ai
