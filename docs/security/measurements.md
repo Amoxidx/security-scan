@@ -313,11 +313,15 @@ Kommando Probes: `node security/prove/run-probes.mjs`
 
 ### Suite
 
-Nach der Härtungsrunde: **16/16** Fälle in `security/gate/gate.test.sh` (lokal, bash/node).
-Auf dem Vor-Fix-Stand des Argument-Parsers (Zweierschritt ohne boolesche Flags) fällt
-**1 von 16** Fällen — der Positionsfall `--no-gate` zuerst. Die übrigen fünfzehn, inkl. der
-neun Fälle aus der vorherigen Runde, bleiben grün, weil der Workflow `--no-gate` am Ende
-setzt und die anderen neuen Fälle andere Pfade prüfen.
+Ausgeliefert hat die Runde **19/19** Fälle in `security/gate/gate.test.sh` (lokal, bash/node).
+Der Zwischenstand von 16 Fällen, der hier ursprünglich stand, war die Zahl zum Zeitpunkt des
+Parser-Fixes; die drei Fälle für den Scanner-Ausfall kamen im selben Pull Request danach.
+
+Setzt man `security/scanners/normalize.mjs` auf den Stand vor beiden Fixes zurück, fallen
+**2 von 19** Fällen: der Positionsfall `--no-gate` zuerst und der Fall, dass ein Scanner im
+Status `error` den Schritt scheitern lassen muss. Beide Fixes liegen in derselben Datei,
+deshalb trifft ein Rückbau sie zusammen. Die übrigen siebzehn bleiben grün — der Workflow
+setzt `--no-gate` ans Ende, und die anderen Fälle prüfen andere Pfade.
 
 ### Was sich nicht geändert hat
 
@@ -337,6 +341,64 @@ Kein Eintrag hier behauptet, dass diese beiden Punkte grün sind.
 Probes: 5/5. Semgrep über das Repo ohne Korpus: Exit 0, 0 Parse-Fehler (lokal mit
 Semgrep 1.136.0).
 
+
+---
+
+## 2026-08-10 — Schwellen erzwingen und in CI messen
+
+Bis hierher waren die Korpus-Kennzahlen von nichts abgesichert: `eval/run.mjs` schrieb
+Detection ≥ 50 % und Falsch-Positive ≤ 5 % in den Report, beendete aber immer mit Exit 0
+(auch bei 0 % Detection, etwa wenn Semgrep fehlte). Kein CI-Job fuhr Suite, Probes oder
+Korpus-Messung.
+
+**Was jetzt gilt**
+
+- `security/eval/run.mjs` erzwingt die dokumentierten Schwellen (50 % / 5 %) als Exit-Code;
+  Flags `--min-detection` / `--max-fp` überschreiben sie. Leerer oder einseitiger Korpus
+  (keine Vuln- oder keine Benign-Fälle) ist ein Fehler, kein vacuous pass. p95 bleibt ohne
+  Schwelle (Maschinenlast, nicht Regression).
+- CI-Job `verify` in `.github/workflows/security-scan.yml` fährt der Reihe nach
+  `gate.test.sh`, `run-probes.mjs`, `eval/run.mjs --no-ai`. **Kein** Base-Revision-Reset:
+  der Job prüft die PR-Änderung, nicht die Base gegen sich selbst. Authority bleiben
+  `static` und `scanners`.
+- Installiert wird nur Semgrep `1.172.0` (wie im `scanners`-Job).
+
+Kommando: `node security/eval/run.mjs --no-ai`  
+Suite: `bash security/gate/gate.test.sh`  
+Probes: `node security/prove/run-probes.mjs`
+
+| Metrik | Wert | Schwelle | |
+|---|---|---|---|
+| Detection Rate | 60,0 % (6/10) | ≥ 50 % | **erzwungen** |
+| Falsch-Positiv-Rate | 0,0 % (0/7) | ≤ 5 % | **erzwungen** |
+| Blockiert aus falschem Grund | 0 | 0 | erreicht |
+| p95 Wall-Clock | 1,3 s | (nicht erzwungen) | informativ |
+
+### Ausdrücklich weiterhin ungemessen
+
+- **Modellstufen (Triage / Lens):** kein Provider in diesem Lauf; Wirkung auf Detection und
+  FP-Rate bleibt unbelegt.
+- **Korpuszahlen mit `osv-scanner` / `gitleaks`:** die 60 %/0 % sind mit Semgrep allein
+  gemessen. Beide Tools bewusst nicht im `verify`-Job; ihre Aufnahme erfordert eine neu
+  gemessene Baseline, sonst ist unklar, welche Änderung die Zahl bewegt hat.
+
+### Erster CI-Lauf des `verify`-Jobs (PR #3, Branch `fix/enforce-and-measure`)
+
+Der Job hat im ersten Lauf, in dem er existiert, einen Defekt gefunden, den vier vorherige
+grüne Jobs (`static`, `scanners`, `codeql`, `ai-review`) nicht sehen konnten.
+
+- **Suite:** 23/23 grün (unter Node 20).
+- **Probes:** rot. Wörtlich aus dem Job-Log, Schritt `Probes`:
+  `TypeError: Unknown file extension ".ts" for /tmp/probe-…/src/seed.ts`
+  (u. a. `vuln-002-entropy-truncation`, `vuln-004-nonce-reuse`).
+- **Ursache:** `security/prove/exec-probe.mjs` lädt Korpus-Fixtures per dynamischem
+  `import()`; der Korpus enthält `.ts`-Dateien. Der Job stand auf `node-version: '20'`,
+  und Node 20 kann TypeScript-Typen nicht strippen. Gegenprobe lokal (v22.22.3): mit
+  Type-Stripping laufen die Probes 5/5; ohne (z. B. `NODE_OPTIONS=--no-experimental-strip-types`)
+  derselbe `ERR_UNKNOWN_FILE_EXTENSION` / `Unknown file extension ".ts"`.
+- **Folge:** Schritt „Corpus thresholds“ wurde nicht mehr erreicht.
+- **Korrektur:** `verify` auf Node 22; README/`engines` nennen den Unterschied Gate vs.
+  Beweisstufe statt „Node ≥ 20“ für alles.
 
 ---
 

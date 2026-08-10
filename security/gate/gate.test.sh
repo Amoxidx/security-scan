@@ -824,6 +824,63 @@ write_status_only_sarif() {
   fi
 }
 
+# ---------------------------------------------------------------- 20–23: eval thresholds (I1)
+
+echo "=== eval thresholds (I1) ==="
+
+EVAL_RUN="$ROOT/security/eval/run.mjs"
+EVAL_OUT="$WORK/eval-out"
+mkdir -p "$EVAL_OUT"
+
+# 20. Detection below threshold via unreachable --min-detection → exit != 0, names the threshold.
+{
+  run node "$EVAL_RUN" --no-ai --min-detection 100 --out "$EVAL_OUT/too-high"
+  if [ "$RUN_RC" -ne 0 ] \
+    && echo "$RUN_OUT" | grep -qE 'THRESHOLD FAIL: detection rate' \
+    && echo "$RUN_OUT" | grep -qE 'below minimum 100'; then
+    case_result "I1: detection below --min-detection exits non-zero naming threshold" 1
+  else
+    case_result "I1: detection below --min-detection exits non-zero naming threshold" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# 21. Counter: documented threshold (50) holds on current corpus → exit 0.
+{
+  run node "$EVAL_RUN" --no-ai --min-detection 50 --max-fp 5 --out "$EVAL_OUT/documented"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "I1-counter: documented thresholds pass (exit 0)" 1
+  else
+    case_result "I1-counter: documented thresholds pass (exit 0)" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# 22. Empty corpus directory → exit != 0 (vacuous-pass protection). Real corpus untouched.
+{
+  EMPTY_CORPUS="$WORK/empty-corpus"
+  mkdir -p "$EMPTY_CORPUS"
+  run node "$EVAL_RUN" --no-ai --corpus "$EMPTY_CORPUS" --out "$EVAL_OUT/empty"
+  if [ "$RUN_RC" -ne 0 ]; then
+    case_result "I1: empty corpus exits non-zero (vacuous-pass guard)" 1
+  else
+    case_result "I1: empty corpus exits non-zero (vacuous-pass guard)" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# 23. Unreachable --max-fp → exit != 0 (false-positive threshold).
+{
+  run node "$EVAL_RUN" --no-ai --max-fp -1 --out "$EVAL_OUT/strict-fp"
+  if [ "$RUN_RC" -ne 0 ] \
+    && echo "$RUN_OUT" | grep -qE 'THRESHOLD FAIL: false positive rate'; then
+    case_result "I1: FP rate above --max-fp exits non-zero naming threshold" 1
+  else
+    case_result "I1: FP rate above --max-fp exits non-zero naming threshold" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
 # ---------------------------------------------------------------- summary
 
 echo

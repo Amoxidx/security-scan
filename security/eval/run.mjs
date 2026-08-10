@@ -15,6 +15,8 @@
  * Usage:
  *   node security/eval/run.mjs [--only <substring>] [--out <dir>] [--keep]
  *                              [--no-scan] [--no-ai] [--config <harness config>]
+ *                              [--min-detection <percent>] [--max-fp <percent>]
+ *                              [--corpus <dir>]
  *
  * Three stages run per case: the static gate, the scanners (Semgrep, OSV, Gitleaks via
  * SARIF), and the AI review. --no-scan and --no-ai switch a stage off, which is how the
@@ -22,6 +24,10 @@
  *
  * Use --no-ai whenever a coding agent CLI happens to be on PATH — the harness would
  * otherwise fire real agent calls for every case, which takes minutes each.
+ *
+ * Exit code: non-zero when detection falls below --min-detection, when the false-positive
+ * rate exceeds --max-fp, or when the corpus is empty / one-sided (vacuous pass).
+ * p95 is reported but never gates the exit code — see DEFAULT_MIN_DETECTION below.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, cpSync, rmSync } from 'node:fs';
@@ -32,7 +38,13 @@ import { tmpdir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
-const CORPUS = join(HERE, 'corpus');
+
+// Documented Phase-0 targets (implementation-plan §3). Enforced at process exit.
+// Override with --min-detection / --max-fp. Do NOT add a p95 wall-clock threshold:
+// the same revision measures 1.3 s–1.8 s depending on machine load; a time gate in CI
+// would be a flaky detector, not a regression signal.
+const DEFAULT_MIN_DETECTION = 50;
+const DEFAULT_MAX_FP = 5;
 
 const args = {};
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -43,6 +55,9 @@ for (let i = 2; i < process.argv.length; i += 1) {
   else if (a.startsWith('--')) { args[a.slice(2)] = process.argv[i + 1]; i += 1; }
 }
 const outDir = args.out || join(HERE, 'results');
+const CORPUS = args.corpus ? resolve(args.corpus) : join(HERE, 'corpus');
+const minDetection = Number(args['min-detection'] ?? DEFAULT_MIN_DETECTION);
+const maxFp = Number(args['max-fp'] ?? DEFAULT_MAX_FP);
 
 // ---------------------------------------------------------------- corpus loading
 
@@ -201,6 +216,17 @@ if (!cases.length) {
   process.exit(1);
 }
 
+// Vacuous-pass protection: a gate whose input set can be empty must fail when empty.
+// Missing either side makes the rates meaningless (0/0 would look like a pass).
+const foundVuln = cases.filter((c) => c.kind === 'vuln').length;
+const foundBenign = cases.filter((c) => c.kind === 'benign').length;
+if (foundVuln === 0 || foundBenign === 0) {
+  console.error(
+    `Corpus incomplete: found ${foundVuln} vuln case(s) and ${foundBenign} benign case(s); need at least one of each.`
+  );
+  process.exit(1);
+}
+
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const runDir = join(outDir, stamp);
 mkdirSync(runDir, { recursive: true });
@@ -259,6 +285,13 @@ for (const testCase of cases) {
 
 // ---------------------------------------------------------------- report
 
+if (rows.length !== cases.length) {
+  console.error(
+    `Case count mismatch: ran ${rows.length} case(s) but loaded ${cases.length}.`
+  );
+  process.exit(1);
+}
+
 const vuln = rows.filter((r) => r.kind === 'vuln');
 const benign = rows.filter((r) => r.kind === 'benign');
 const tp = vuln.filter((r) => r.outcome === 'TP').length;
@@ -267,8 +300,8 @@ const fp = benign.filter((r) => r.outcome === 'FP').length;
 const times = rows.map((r) => r.ms).sort((a, b) => a - b);
 const p95 = times[Math.min(times.length - 1, Math.floor(times.length * 0.95))];
 
-const detection = vuln.length ? (tp / vuln.length) * 100 : 0;
-const fpRate = benign.length ? (fp / benign.length) * 100 : 0;
+const detection = (tp / vuln.length) * 100;
+const fpRate = (fp / benign.length) * 100;
 
 const summary = {
   timestamp: stamp,
@@ -279,7 +312,7 @@ const summary = {
   falsePositiveRate: Number(fpRate.toFixed(1)),
   blockedForWrongReason: wrong,
   p95Ms: p95,
-  targets: { detectionRate: 50, falsePositiveRate: 5 },
+  targets: { detectionRate: minDetection, falsePositiveRate: maxFp },
   rows,
 };
 writeFileSync(join(runDir, 'summary.json'), JSON.stringify(summary, null, 2));
@@ -293,9 +326,10 @@ const md = [
   '',
   '| Metric | Value | Target |',
   '|---|---|---|',
-  `| Detection rate | ${detection.toFixed(1)} % (${tp}/${vuln.length}) | ≥ 50 % |`,
-  `| **False positive rate** | **${fpRate.toFixed(1)} % (${fp}/${benign.length})** | **≤ 5 %** |`,
+  `| Detection rate | ${detection.toFixed(1)} % (${tp}/${vuln.length}) | ≥ ${minDetection} % |`,
+  `| **False positive rate** | **${fpRate.toFixed(1)} % (${fp}/${benign.length})** | **≤ ${maxFp} %** |`,
   `| Blocked for the wrong reason | ${wrong} | 0 |`,
+  // p95 target is informational only — never enforced (see DEFAULT_MIN_DETECTION comment).
   `| p95 wall clock | ${(p95 / 1000).toFixed(1)} s | ≤ 480 s |`,
   '',
   '## Cases',
@@ -309,3 +343,20 @@ writeFileSync(join(runDir, 'summary.md'), md);
 console.log(`\nDetection ${detection.toFixed(1)} % (${tp}/${vuln.length}) · False positives ${fpRate.toFixed(1)} % (${fp}/${benign.length}) · p95 ${(p95 / 1000).toFixed(1)} s`);
 if (!aiEverRan) console.log('NOTE: AI stage never ran — static gate only.');
 console.log(`\nResults: ${runDir}`);
+
+// Enforce documented thresholds. --no-ai does not relax them: they apply to whatever
+// static stage combination this run actually measured.
+let exitCode = 0;
+if (detection < minDetection) {
+  console.error(
+    `THRESHOLD FAIL: detection rate ${detection.toFixed(1)} % is below minimum ${minDetection} %`
+  );
+  exitCode = 1;
+}
+if (fpRate > maxFp) {
+  console.error(
+    `THRESHOLD FAIL: false positive rate ${fpRate.toFixed(1)} % exceeds maximum ${maxFp} %`
+  );
+  exitCode = 1;
+}
+process.exit(exitCode);
