@@ -157,6 +157,28 @@ Host-Allowlist in `static-checks.sh`, die Lens-Auswahl und Blocking-Schwelle in
 historische Fixes aus dem eigenen Repo treffen das eigene Bedrohungsmodell besser als jeder
 generische Korpus.
 
+**Ohne Required Checks ist das Ganze eine Empfehlung.** Ein roter Check hält niemanden auf,
+solange er nicht in den Branch-Protection-Rules steht. Hier sind `static`, `scanners` und
+`verify` gesetzt:
+
+```bash
+gh api -X PUT repos/<owner>/<repo>/branches/<branch>/protection --input - <<'JSON'
+{
+  "required_status_checks": { "strict": false, "contexts": ["static", "scanners", "verify"] },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+```
+
+`strict: false` verlangt keinen Rebase vor jedem Merge; `enforce_admins: false` lässt
+Administratoren im Notfall daran vorbei. Wer Reviews erzwingen will, füllt
+`required_pull_request_reviews` mit `require_code_owner_reviews` — `.github/CODEOWNERS` trägt
+sonst nur Reviewer ein, ohne dass ihre Zustimmung den Merge aufhält.
+
 ---
 
 ## Was das nicht ist
