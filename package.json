@@ -4,7 +4,7 @@
   "description": "Blocking pull request security gate: tools find, a model filters, only verified findings turn the check red",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=22.18.0" },
   "scripts": {
     "gate": "security/gate/static-checks.sh",
     "review": "node security/redteam/harness.mjs",

@@ -203,8 +203,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      # Probes dynamically import .ts corpus fixtures (exec-probe.mjs). That needs a Node
+      # that strips TypeScript types without a flag. Node 20 cannot; the first verify run
+      # failed with ERR_UNKNOWN_FILE_EXTENSION on every .ts fixture while the suite was green.
+      # Do not roll this back to 20 — only this job has that requirement; static/scanners/
+      # ai-review stay on 20 on purpose.
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with: { node-version: '22' }
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
 

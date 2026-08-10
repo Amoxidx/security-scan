@@ -382,6 +382,24 @@ Probes: `node security/prove/run-probes.mjs`
   gemessen. Beide Tools bewusst nicht im `verify`-Job; ihre Aufnahme erfordert eine neu
   gemessene Baseline, sonst ist unklar, welche Änderung die Zahl bewegt hat.
 
+### Erster CI-Lauf des `verify`-Jobs (PR #3, Branch `fix/enforce-and-measure`)
+
+Der Job hat im ersten Lauf, in dem er existiert, einen Defekt gefunden, den vier vorherige
+grüne Jobs (`static`, `scanners`, `codeql`, `ai-review`) nicht sehen konnten.
+
+- **Suite:** 23/23 grün (unter Node 20).
+- **Probes:** rot. Wörtlich aus dem Job-Log, Schritt `Probes`:
+  `TypeError: Unknown file extension ".ts" for /tmp/probe-…/src/seed.ts`
+  (u. a. `vuln-002-entropy-truncation`, `vuln-004-nonce-reuse`).
+- **Ursache:** `security/prove/exec-probe.mjs` lädt Korpus-Fixtures per dynamischem
+  `import()`; der Korpus enthält `.ts`-Dateien. Der Job stand auf `node-version: '20'`,
+  und Node 20 kann TypeScript-Typen nicht strippen. Gegenprobe lokal (v22.22.3): mit
+  Type-Stripping laufen die Probes 5/5; ohne (z. B. `NODE_OPTIONS=--no-experimental-strip-types`)
+  derselbe `ERR_UNKNOWN_FILE_EXTENSION` / `Unknown file extension ".ts"`.
+- **Folge:** Schritt „Corpus thresholds“ wurde nicht mehr erreicht.
+- **Korrektur:** `verify` auf Node 22; README/`engines` nennen den Unterschied Gate vs.
+  Beweisstufe statt „Node ≥ 20“ für alles.
+
 ---
 
 ## Vorlage für weitere Einträge

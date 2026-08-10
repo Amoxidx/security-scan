@@ -126,7 +126,11 @@ node security/eval/run.mjs              # vollständig
 security/hooks/install.sh
 ```
 
-Node ≥ 20, `git`, `bash`. Scanner optional, aber ohne sie fällt die Detection Rate auf 10 %:
+Das Gate selbst (Suite, `static-checks`, `eval/run.mjs`) läuft unter Node ≥ 20 — im CI
+belegt, Suite 23/23. Die Beweisstufe (`node security/prove/run-probes.mjs`) importiert
+`.ts`-Fixtures aus dem Korpus und braucht ein Node, das TypeScript-Typen **ohne Flag**
+strippt (gemessen: v22.22.3; laut Node/Amaro ab v22.18.0 standardmäßig aktiv). Zusätzlich
+`git` und `bash`. Scanner optional, aber ohne sie fällt die Detection Rate auf 10 %:
 
 ```bash
 pip install semgrep
