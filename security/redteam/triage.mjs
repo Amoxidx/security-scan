@@ -164,12 +164,35 @@ function isBlocking(f) {
 const blocking = triaged.filter(isBlocking);
 const dismissedButBlocked = blocking.filter((f) => f.verdict === 'false_positive');
 
+/**
+ * Artifact shape for the triage report. Only allowlisted scalar fields, length-capped.
+ * Model/network output must not be written through wholesale — that is both a CodeQL
+ * taint sink and a way for a prompt-injected model to plant arbitrary content in CI
+ * artifacts.
+ */
+function artifactRecord(f) {
+  const s = (v, n = 2000) => String(v ?? '').slice(0, n);
+  return {
+    tool: s(f.tool, 64),
+    ruleId: s(f.ruleId, 256),
+    file: s(f.file, 1024),
+    line: Number.isFinite(Number(f.line)) ? Number(f.line) : 0,
+    severity: s(f.severity, 32),
+    scannerSeverity: s(f.scannerSeverity || f.severity, 32),
+    verdict: s(f.verdict, 32),
+    reason: s(f.reason, 2000),
+    message: s(f.message, 2000),
+    cwe: f.cwe == null ? null : s(f.cwe, 64),
+    class: f.class == null ? null : s(f.class, 64),
+  };
+}
+
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(
   outPath,
   JSON.stringify(
     {
-      triaged,
+      triaged: triaged.map(artifactRecord),
       dropped: dropped.length,
       blocking: blocking.length,
       dismissedButBlocked: dismissedButBlocked.length,

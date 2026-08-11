@@ -1019,16 +1019,22 @@ EOF
   fi
 }
 
-# ---------------------------------------------------------------- 27: path containment (H2)
+# ---------------------------------------------------------------- 27–28: path containment (H2)
 
 echo "=== path-safe resolveRepoFile (H2) ==="
 
 {
   PATH_SAFE="$ROOT/security/redteam/path-safe.mjs"
+  H2ROOT="$WORK/h2-root"
+  mkdir -p "$H2ROOT/src"
+  echo 'export const x = 1;' > "$H2ROOT/src/app.js"
   run node --input-type=module -e "
     import { resolveRepoFile } from 'file://$PATH_SAFE';
     import { resolve } from 'node:path';
-    const root = resolve('$WORK/h2-root');
+    import { realpathSync } from 'node:fs';
+    const root = resolve('$H2ROOT');
+    // macOS: /var -> /private/var; resolveRepoFile returns realpath for existing files.
+    const realRoot = realpathSync(root);
     const ok = [];
     const fail = [];
     const expectNull = (label, file) => {
@@ -1037,7 +1043,9 @@ echo "=== path-safe resolveRepoFile (H2) ==="
     };
     const expectOk = (label, file) => {
       const r = resolveRepoFile(root, file);
-      if (r && r.startsWith(root)) ok.push(label); else fail.push(label + '=>' + r);
+      if (r && (r === realpathSync(resolve(root, file)) || r.startsWith(realRoot + '/') || r === realRoot)) {
+        ok.push(label);
+      } else fail.push(label + '=>' + r);
     };
     expectNull('traversal', '../../../etc/passwd');
     expectNull('abs', '/etc/passwd');
@@ -1056,6 +1064,38 @@ echo "=== path-safe resolveRepoFile (H2) ==="
     case_result "H2: resolveRepoFile rejects traversal and absolute paths" 1
   else
     case_result "H2: resolveRepoFile rejects traversal and absolute paths" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# Symlink whose target is outside the repo must be rejected (review finding 1).
+{
+  PATH_SAFE="$ROOT/security/redteam/path-safe.mjs"
+  H2SYM="$WORK/h2-symlink"
+  mkdir -p "$H2SYM/src"
+  # Tracked-style symlink: lexical path inside repo, real target outside.
+  ln -s /etc/passwd "$H2SYM/src/evil.js" 2>/dev/null || ln -s /etc/hosts "$H2SYM/src/evil.js"
+  run node --input-type=module -e "
+    import { resolveRepoFile } from 'file://$PATH_SAFE';
+    import { resolve } from 'node:path';
+    const root = resolve('$H2SYM');
+    const r = resolveRepoFile(root, 'src/evil.js');
+    if (r !== null) {
+      console.error('symlink escape allowed ->', r);
+      process.exit(1);
+    }
+    // Control: a normal file still resolves.
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(resolve(root, 'src/ok.js'), 'ok');
+    const ok = resolveRepoFile(root, 'src/ok.js');
+    if (!ok) { console.error('normal file rejected'); process.exit(1); }
+    console.log('symlink rejected, normal ok');
+    process.exit(0);
+  "
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "H2: resolveRepoFile rejects symlink escape outside repo" 1
+  else
+    case_result "H2: resolveRepoFile rejects symlink escape outside repo" 0 \
       "rc=$RUN_RC out=$(short "$RUN_OUT")"
   fi
 }

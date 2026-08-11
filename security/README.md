@@ -92,15 +92,18 @@ Stufe A blockiert weiterhin.
 2. **Modelle eintragen:** `redteam/config.json` auf Provider und Modelle setzen, die du
    wirklich erreichst.
 3. **Required Checks setzen:** In den Branch-Protection-Rules für `master` die Checks
-   **`static`**, **`scanners`** und **`verify`** als *required* markieren (das sind die
-   Check-Run-Namen, die der Authority-Workflow auf den PR-Head schreibt). Ohne diesen
-   Schritt ist die Schwelle nur eine Anzeige. `ai-review` erst required setzen, nachdem
-   die Falsch-Positiv-Rate über ein paar Wochen beobachtet wurde.
+   **`static`**, **`scanners`** und **`verify`** als *required* markieren (Check-Run-
+   Namen vom Authority-Workflow auf dem PR-Head). `ai-review` erst required setzen,
+   nachdem die Falsch-Positiv-Rate über ein paar Wochen beobachtet wurde.
 4. **Code-Owner-Reviews erzwingen** für `/.github/` und `/security/` (siehe
-   `.github/CODEOWNERS`). Die Authority-Workflow-Datei kommt vom Default-Branch — Owner-
-   Reviews verhindern, dass ein Merge die Authority selbst aushöhlt.
+   `.github/CODEOWNERS`). Owner-Reviews verhindern, dass ein Merge die Authority aushöhlt.
 5. **Environment `security-ai`:** optional Required Reviewers aktivieren, damit Model-
    Keys auf `ai-review` nicht ohne menschliche Freigabe fließen.
+
+**PR-Pfad und Trust-Boundary:** `security-scan.yml` hat **keinen** `pull_request`-Trigger.
+Nur `Security PR Trigger` (minimal, ohne Secrets) läuft am PR; die Authority-Jobs laufen
+über `workflow_run` und laden ihre YAML **immer vom Default-Branch**. So kann ein PR die
+Required-Check-Namen nicht mit eigener Workflow-YAML grün färben.
 
 ## Lokal ausführen
 
@@ -129,6 +132,6 @@ Repo-spezifisch anzupassen sind: die Host-Allowlist in Check 6 von `static-check
 (unbekannte Hosts blockieren), die Lens-Auswahl in `config.json` und die Blocking-Schwelle
 in `gate.blockOn`.
 
-Der PR-Pfad läuft über `workflow_run`: der Trigger-Workflow ist absichtlich minimal und
-ohne Secrets; die Authority-Jobs laden ihre YAML vom Default-Branch. So kann ein PR die
-Gate-Logik nicht umschreiben, indem er die Workflow-Datei auf seinem Branch ändert.
+Der PR-Pfad läuft ausschließlich über `workflow_run` (kein `pull_request` am
+Authority-Workflow). Der Trigger ist minimal und ohne Secrets; die Authority-Jobs laden
+YAML und `security/` vom Default-Branch.

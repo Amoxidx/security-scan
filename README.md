@@ -158,8 +158,10 @@ historische Fixes aus dem eigenen Repo treffen das eigene Bedrohungsmodell besse
 generische Korpus.
 
 **Ohne Required Checks ist das Ganze eine Empfehlung.** Ein roter Check hält niemanden auf,
-solange er nicht in den Branch-Protection-Rules steht. Authority läuft über `workflow_run`
-vom Default-Branch; die Check-Namen auf dem PR-Head sind `static`, `scanners` und `verify`:
+solange er nicht in den Branch-Protection-Rules steht. Authority läuft **nur** über
+`workflow_run` vom Default-Branch (kein `pull_request`-Trigger am Gate-Workflow — sonst
+könnte ein same-repo-PR die Required-Namen selbst grün melden). Check-Namen auf dem
+PR-Head: `static`, `scanners`, `verify`:
 
 ```bash
 gh api -X PUT repos/<owner>/<repo>/branches/<branch>/protection --input - <<'JSON'

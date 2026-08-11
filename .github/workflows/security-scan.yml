@@ -9,24 +9,20 @@ name: Security Scan
 #   verify    regression suite + probes + corpus thresholds
 #
 # Triggers:
-#   workflow_run  — PR path. The workflow file is taken from the default branch, so a PR
-#                   cannot neuter required jobs by editing this YAML on its branch.
+#   workflow_run  — ONLY PR path. Workflow YAML is always loaded from the default branch,
+#                   so a PR cannot neuter required jobs by editing this file on its branch.
 #   push/master   — post-merge regression on the integrated tree
 #   workflow_dispatch — manual
 #
-# Required status check names (branch protection): static, scanners, verify.
-# On the PR path those names are published as Check Runs on the PR head SHA.
+# There is intentionally NO pull_request trigger on this workflow. A dual
+# pull_request+workflow_run path lets a same-repo PR green the required check names from
+# attacker-controlled YAML. Required names (static/scanners/verify) are published only
+# as Check Runs on the PR head SHA from this default-branch authority path.
 #
 # Optional model secrets for ai-review sit behind the `security-ai` environment.
 # Configure required reviewers on that environment so keys never flow without approval.
 
 on:
-  # pull_request: keeps CI working for the PR that introduces workflow_run (chicken-egg:
-  # workflow_run listeners only fire from the default branch). After this lands on master,
-  # a follow-up can drop pull_request so authority is only the default-branch path.
-  pull_request:
-    branches: [master]
-    types: [opened, synchronize, reopened]
   workflow_run:
     workflows: ["Security PR Trigger"]
     types: [completed]
@@ -38,7 +34,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: security-scan-${{ github.event.workflow_run.head_branch || github.ref }}-${{ github.event.workflow_run.id || github.run_id }}
+  group: security-scan-${{ github.event.workflow_run.head_sha || github.ref }}-${{ github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -71,17 +67,11 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Install gate from base / default branch (not from the PR)
+      - name: Install gate from default branch (not from the PR head)
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            rm -rf security
-            git checkout "origin/${{ github.base_ref }}" -- security/
-          else
-            git fetch --no-tags origin master
-            rm -rf security
-            git checkout origin/master -- security/
-          fi
+          git fetch --no-tags origin master
+          rm -rf security
+          git checkout origin/master -- security/
 
       - name: Deterministic checks
         id: run
@@ -90,10 +80,7 @@ jobs:
         run: |
           chmod +x security/gate/static-checks.sh
           BASE_REF="origin/master"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            BASE_REF="origin/${{ github.base_ref }}"
-          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
             PR_BASE=$(gh api "repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/pulls" \
               --jq '.[0].base.ref // empty' 2>/dev/null || true)
             if [ -n "$PR_BASE" ]; then
@@ -154,17 +141,11 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Install gate from base / default branch (not from the PR)
+      - name: Install gate from default branch (not from the PR head)
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            rm -rf security
-            git checkout "origin/${{ github.base_ref }}" -- security/
-          else
-            git fetch --no-tags origin master
-            rm -rf security
-            git checkout origin/master -- security/
-          fi
+          git fetch --no-tags origin master
+          rm -rf security
+          git checkout origin/master -- security/
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '20' }
@@ -184,10 +165,7 @@ jobs:
         run: |
           git fetch --no-tags origin master
           BASE_REF="origin/master"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            BASE_REF="origin/${{ github.base_ref }}"
-          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
             PR_BASE=$(gh api "repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/pulls" \
               --jq '.[0].base.ref // empty' 2>/dev/null || true)
             if [ -n "$PR_BASE" ]; then
@@ -291,17 +269,11 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Install gate from base / default branch (not from the PR)
+      - name: Install gate from default branch (not from the PR head)
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            rm -rf security
-            git checkout "origin/${{ github.base_ref }}" -- security/
-          else
-            git fetch --no-tags origin master
-            rm -rf security
-            git checkout origin/master -- security/
-          fi
+          git fetch --no-tags origin master
+          rm -rf security
+          git checkout origin/master -- security/
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '20' }
@@ -312,10 +284,7 @@ jobs:
         run: |
           git fetch --no-tags origin master
           BASE_REF="origin/master"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            BASE_REF="origin/${{ github.base_ref }}"
-          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
             PR_BASE=$(gh api "repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/pulls" \
               --jq '.[0].base.ref // empty' 2>/dev/null || true)
             if [ -n "$PR_BASE" ]; then
