@@ -1,0 +1,22 @@
+{
+  "id": "lab-fixture-proto-pollution",
+  "title": "Recursive merge walks __proto__ and pollutes Object.prototype",
+  "file": "src/merge.ts",
+  "line": 3,
+  "severity": "high",
+  "lens": "state",
+  "root_cause": "mergeConfig recursively assigns attacker-controlled keys including __proto__, so a JSON payload can set properties on Object.prototype.",
+  "attacker_model": "Anyone who can supply the patch object — typically untrusted JSON from a network client or config file — after JSON.parse (which preserves a literal __proto__ key).",
+  "attack_path": [
+    "Attacker sends JSON: {\"__proto__\": {\"polluted\": \"yes\"}}",
+    "Server JSON.parse preserves the __proto__ key",
+    "mergeConfig({}, parsed) walks keys and recurses into __proto__",
+    "Subsequent ordinary objects inherit polluted"
+  ],
+  "impact": "Integrity break: attacker-controlled properties appear on unrelated objects; can escalate to auth bypass or option injection depending on how properties are read.",
+  "guarantee_broken": "Object prototype integrity / safe merge of untrusted objects",
+  "confidence": "high",
+  "how_to_disprove": "After mergeConfig({}, JSON.parse('{\"__proto__\":{\"polluted\":\"yes\"}}')), a fresh {} must not have polluted === 'yes'.",
+  "cwe": "CWE-1321",
+  "summary": "Recursive merge of attacker-supplied JSON walks __proto__, allowing prototype pollution."
+}
