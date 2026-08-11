@@ -88,13 +88,19 @@ Stufe A blockiert weiterhin.
 
 1. **Provider wählen.** Entweder eine CLI installieren und einloggen (siehe oben) — oder
    einen Key setzen: `MOONSHOT_API_KEY`, `ANTHROPIC_API_KEY` bzw. `SECURITY_AI_API_KEY`
-   für Zen. In CI als Repository-Secret.
+   für Zen. In CI als Repository-Secret (optional unter Environment `security-ai`).
 2. **Modelle eintragen:** `redteam/config.json` auf Provider und Modelle setzen, die du
    wirklich erreichst.
-3. **Required Check setzen:** In den Branch-Protection-Rules für `master` den Check
-   **`Security Scan / static`** als *required* markieren. Ohne diesen Schritt ist die
-   Schwelle nur eine Anzeige. `Security Scan / ai-review` zusätzlich required zu setzen,
-   erst nachdem die Falsch-Positiv-Rate über ein paar Wochen beobachtet wurde.
+3. **Required Checks setzen:** In den Branch-Protection-Rules für `master` die Checks
+   **`static`**, **`scanners`** und **`verify`** als *required* markieren (das sind die
+   Check-Run-Namen, die der Authority-Workflow auf den PR-Head schreibt). Ohne diesen
+   Schritt ist die Schwelle nur eine Anzeige. `ai-review` erst required setzen, nachdem
+   die Falsch-Positiv-Rate über ein paar Wochen beobachtet wurde.
+4. **Code-Owner-Reviews erzwingen** für `/.github/` und `/security/` (siehe
+   `.github/CODEOWNERS`). Die Authority-Workflow-Datei kommt vom Default-Branch — Owner-
+   Reviews verhindern, dass ein Merge die Authority selbst aushöhlt.
+5. **Environment `security-ai`:** optional Required Reviewers aktivieren, damit Model-
+   Keys auf `ai-review` nicht ohne menschliche Freigabe fließen.
 
 ## Lokal ausführen
 
@@ -117,7 +123,12 @@ implementiert davon bewusst nur den Diff-Pfad.
 
 ## Anpassen für andere Repos
 
-`security/` und `.github/workflows/security-scan.yml` sind selbstständig und lassen sich
-kopieren. Repo-spezifisch anzupassen sind: die Host-Allowlist in Check 6 von
-`static-checks.sh`, die Lens-Auswahl in `config.json` und die Blocking-Schwelle in
-`gate.blockOn`.
+`security/`, `.github/workflows/security-scan.yml` und
+`.github/workflows/security-pr-trigger.yml` sind selbstständig und lassen sich kopieren.
+Repo-spezifisch anzupassen sind: die Host-Allowlist in Check 6 von `static-checks.sh`
+(unbekannte Hosts blockieren), die Lens-Auswahl in `config.json` und die Blocking-Schwelle
+in `gate.blockOn`.
+
+Der PR-Pfad läuft über `workflow_run`: der Trigger-Workflow ist absichtlich minimal und
+ohne Secrets; die Authority-Jobs laden ihre YAML vom Default-Branch. So kann ein PR die
+Gate-Logik nicht umschreiben, indem er die Workflow-Datei auf seinem Branch ändert.

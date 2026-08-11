@@ -1,0 +1,27 @@
+name: Security PR Trigger
+
+# Minimal pull_request entrypoint. The authoritative jobs live in security-scan.yml and run
+# via workflow_run from the default branch, so a PR cannot rewrite the gate that judges it.
+# This workflow holds no secrets and no write permissions.
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: security-pr-trigger-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    name: ping
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hand off to default-branch authority workflow
+        run: |
+          echo "PR head: ${{ github.event.pull_request.head.sha }}"
+          echo "Base:    ${{ github.event.pull_request.base.ref }}"
+          echo "Authority workflow runs from the default branch via workflow_run."

@@ -77,13 +77,14 @@
     "model": "claude-cli:claude-opus-5"
   },
   "gate": {
-    "$comment": "Severities that turn the check red, after verification.",
+    "$comment": "Severities that turn the check red, after verification. blockOnTruncatedDiff: oversized diffs fail closed instead of reviewing only a prefix.",
     "blockOn": [
       "critical",
       "high",
       "error"
     ],
-    "maxDiffBytes": 400000
+    "maxDiffBytes": 400000,
+    "blockOnTruncatedDiff": true
   },
   "triage": {
     "$comment": "Stage 2 \u2014 filter over scanner output. Use the strongest model available: agentic triage helps little with weak backbones.",
