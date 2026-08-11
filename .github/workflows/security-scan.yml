@@ -34,13 +34,12 @@ on:
 permissions: {}
 
 concurrency:
-  group: security-scan-${{ github.event.workflow_run.head_sha || github.ref }}-${{ github.event.workflow_run.id || github.run_id }}
+  group: security-scan-${{ github.event.workflow_run.head_sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
   static:
     name: static
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -113,7 +112,6 @@ jobs:
 
   scanners:
     name: scanners
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -237,7 +235,6 @@ jobs:
 
   codeql:
     name: codeql
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -256,7 +253,6 @@ jobs:
 
   ai-review:
     name: ai-review
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -347,7 +343,6 @@ jobs:
   # for the run itself; checks:write solely to report the required check name on the PR head.
   verify:
     name: verify
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
