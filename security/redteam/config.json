@@ -33,6 +33,19 @@
       "modelFlag": "--model",
       "timeoutMs": 300000
     },
+    "codex-cli": {
+      "type": "cli",
+      "$comment": "OpenAI Codex CLI on a Codex/ChatGPT subscription. Same idea as kimi-cli/claude-cli: no per-token bills, needs the binary on PATH and an active login. --skip-git-repo-check lets it run in any checkout (CI has no per-path trust config); -s read-only keeps it from writing to or executing in the checked-out tree.",
+      "command": [
+        "codex",
+        "exec",
+        "-s",
+        "read-only",
+        "--skip-git-repo-check"
+      ],
+      "modelFlag": "-m",
+      "timeoutMs": 300000
+    },
     "moonshot": {
       "type": "anthropic",
       "$comment": "Moonshot's Anthropic-compatible adapter. Metered, but no gateway in between.",
@@ -73,8 +86,8 @@
     "refuteThreshold": 2
   },
   "report": {
-    "$comment": "Deliberately a different model than the one that found the bug.",
-    "model": "claude-cli:claude-opus-5"
+    "$comment": "Deliberately a different model than the one that found the bug. Final judge is the same primary-triage model (GPT) per issue #7 \u2014 deliberately NOT the model that ran verify, to avoid the judge grading its own refutation.",
+    "model": "codex-cli:gpt-5.6-sol"
   },
   "gate": {
     "$comment": "Severities that turn the check red, after verification. blockOnTruncatedDiff: oversized diffs fail closed instead of reviewing only a prefix.",
@@ -87,7 +100,7 @@
     "blockOnTruncatedDiff": true
   },
   "triage": {
-    "$comment": "Stage 2 \u2014 filter over scanner output. Use the strongest model available: agentic triage helps little with weak backbones.",
-    "model": "claude-cli:claude-opus-5"
+    "$comment": "Stage 2 \u2014 filter over scanner output. Use the strongest model available: agentic triage helps little with weak backbones. Primary triage model per issue #7: GPT reasons first, Claude refutes in the verify stage below \u2014 kept as two different backbones on purpose.",
+    "model": "codex-cli:gpt-5.6-sol"
   }
 }

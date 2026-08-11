@@ -71,6 +71,8 @@ Kein API-Key, keine Token-Abrechnung. K3 braucht Tier *Moderato* oder höher; da
 fenster *Allegretto* oder höher. Die Limits liegen bei grob 300–1.200 Requests pro 5-h-Fenster
 und ~30 gleichzeitigen Requests — deshalb hat `config.json` ein `maxConcurrency`, das die
 Harness hart einhält. Dasselbe Muster funktioniert mit `claude -p` auf einem Claude-Abo.
+Dasselbe Muster funktioniert mit einer OpenAI-Codex-CLI auf einem Codex-Abo:
+`npm i -g @openai/codex && codex` (einmalig einloggen). Modellspec: `codex-cli:<model>`.
 
 Modelle werden als `provider:model` angegeben (`kimi-cli:kimi-k3`). Ein Provider, der nicht
 erreichbar ist — CLI nicht im PATH, Key nicht gesetzt — wird sauber übersprungen und
