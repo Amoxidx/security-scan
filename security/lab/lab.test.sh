@@ -149,7 +149,7 @@ try {
     workdir: wd, filename: 'ok.js', script: '1', runCommand: [],
   });
   results.banned = await runInSandbox({
-    workdir: wd, filename: 'ok.js', script: '1', runCommand: ['curl', 'https://example.com'],
+    workdir: wd, filename: 'ok.js', script: '1', runCommand: ['curl', 'irrelevant-arg'],
   });
   results.bannedNpm = await runInSandbox({
     workdir: wd, filename: 'ok.js', script: '1', runCommand: ['npm', 'install'],
