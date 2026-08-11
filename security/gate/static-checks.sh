@@ -155,7 +155,7 @@ say '6. New outbound endpoints in added lines'
 # Code only: a link in a markdown file is a citation, not an exfiltration channel.
 # Unknown hosts block: a warn-only check never stops exfiltration endpoints. Adopters
 # extend the allowlist below for their own APIs (see security/README.md).
-HOST_ALLOW='(github\.com|githubusercontent\.com|npmjs\.(org|com)|schema\.org|www\.w3\.org|opensource\.org|api\.moonshot\.ai|api\.anthropic\.com|api\.openai\.com|opencode\.ai)'
+HOST_ALLOW='(github\.com|githubusercontent\.com|npmjs\.(org|com)|schema\.org|www\.w3\.org|opensource\.org|api\.moonshot\.ai|api\.anthropic\.com|api\.openai\.com|opencode\.ai|localhost|127\.0\.0\.1)'
 if HITS=$(echo "$CODE_ADDED" | grep -noE 'https?://[a-zA-Z0-9.-]+' | sort -u -t: -k2 | grep -vE "$HOST_ALLOW"); then
   fail 'new external hosts in code — extend the allowlist only when intentional:'
   echo "$HITS" | sed 's/^/         /' | cut -c1-160
