@@ -54,7 +54,6 @@ function probeEnv() {
     'TERM',
     'USER',
     'LOGNAME',
-    'NODE_OPTIONS',
     'npm_config_cache',
   ];
   const env = {};

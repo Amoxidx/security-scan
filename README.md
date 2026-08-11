@@ -1,5 +1,8 @@
 # Security Scan
 
+[![Security Scan](https://github.com/Amoxidx/security-scan/actions/workflows/security-scan.yml/badge.svg)](https://github.com/Amoxidx/security-scan/actions/workflows/security-scan.yml)
+[![Security PR Trigger](https://github.com/Amoxidx/security-scan/actions/workflows/security-pr-trigger.yml/badge.svg)](https://github.com/Amoxidx/security-scan/actions/workflows/security-pr-trigger.yml)
+
 Eine blockierende Security-Schwelle für Pull Requests — Werkzeuge suchen, ein Modell filtert,
 und rot wird der Check nur für das, was eine adversarielle Verifikation überlebt hat.
 
