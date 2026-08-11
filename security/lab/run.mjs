@@ -150,7 +150,7 @@ function wrapUntrusted(text) {
   return `${UNTRUSTED_BEGIN}\n${cleaned}\n${UNTRUSTED_END}`;
 }
 
-function parseJson(text, fallback = null) {
+export function parseJson(text, fallback = null) {
   let cleaned = String(text).trim();
   // Strip a leading ```json ... ``` fence even when prose follows or precedes it.
   const fence = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
