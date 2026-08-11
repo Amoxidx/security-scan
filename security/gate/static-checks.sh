@@ -80,7 +80,9 @@ say '1. Secret material in added lines'
 # Deliberately narrow patterns. A noisy secret scanner gets muted, which is worse than none.
 # sk-ant- / sk-proj- accept hyphen/underscore in the body; plain sk- stays alphanumeric only
 # so prose like "sk-" does not fire.
-SECRET_PATTERNS='(AKIA[0-9A-Z]{16})|(gh[pousr]_[A-Za-z0-9]{36,})|(sk-ant-[A-Za-z0-9_-]{32,})|(sk-proj-[A-Za-z0-9_-]{32,})|(sk-[A-Za-z0-9]{32,})|(xox[baprs]-[A-Za-z0-9-]{10,})|(-----BEGIN [A-Z ]*PRIVATE KEY-----)|(eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})'
+# Deliberately prefix-anchored. github_pat_ / glpat- cover fine-grained GitHub and GitLab
+# tokens that the older gh[pousr]_ class misses; npm_ stays alphanumeric to limit prose hits.
+SECRET_PATTERNS='(AKIA[0-9A-Z]{16})|(gh[pousr]_[A-Za-z0-9]{36,})|(github_pat_[A-Za-z0-9_]{20,})|(glpat-[A-Za-z0-9_-]{20,})|(npm_[A-Za-z0-9]{36,})|(sk-ant-[A-Za-z0-9_-]{32,})|(sk-proj-[A-Za-z0-9_-]{32,})|(sk-[A-Za-z0-9]{32,})|(xox[baprs]-[A-Za-z0-9-]{10,})|(-----BEGIN [A-Z ]*PRIVATE KEY-----)|(eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})'
 if HITS=$(echo "$ADDED" | grep -nE "$SECRET_PATTERNS"); then
   fail "possible credential in added lines:"
   echo "$HITS" | sed 's/^/         /' | cut -c1-160
@@ -151,9 +153,12 @@ fi
 # ---------------------------------------------------------------- outbound network
 say '6. New outbound endpoints in added lines'
 # Code only: a link in a markdown file is a citation, not an exfiltration channel.
-if HITS=$(echo "$CODE_ADDED" | grep -noE 'https?://[a-zA-Z0-9.-]+' | sort -u -t: -k2 | grep -vE '(github\.com|githubusercontent\.com|npmjs\.(org|com)|schema\.org|www\.w3\.org|opensource\.org)'); then
-  warn 'new external hosts referenced — confirm they are expected:'
-  echo "$HITS" | sed 's/^/         /'
+# Unknown hosts block: a warn-only check never stops exfiltration endpoints. Adopters
+# extend the allowlist below for their own APIs (see security/README.md).
+HOST_ALLOW='(github\.com|githubusercontent\.com|npmjs\.(org|com)|schema\.org|www\.w3\.org|opensource\.org|api\.moonshot\.ai|api\.anthropic\.com|api\.openai\.com|opencode\.ai)'
+if HITS=$(echo "$CODE_ADDED" | grep -noE 'https?://[a-zA-Z0-9.-]+' | sort -u -t: -k2 | grep -vE "$HOST_ALLOW"); then
+  fail 'new external hosts in code — extend the allowlist only when intentional:'
+  echo "$HITS" | sed 's/^/         /' | cut -c1-160
 else
   ok 'no unexpected external hosts'
 fi

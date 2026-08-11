@@ -13,11 +13,19 @@ FAIL=0
 STAGED=$(git diff --cached --name-only --diff-filter=d)
 [ -z "$STAGED" ] && exit 0
 
+# Build an argv array so paths with spaces/globs are not re-split (SC2086).
+STAGED_ARGS=()
+while IFS= read -r f; do
+  [ -n "$f" ] && STAGED_ARGS+=("$f")
+done <<EOF
+$STAGED
+EOF
+[ "${#STAGED_ARGS[@]}" -eq 0 ] && exit 0
+
 if command -v semgrep >/dev/null 2>&1; then
   # Only the staged files, only local rules, no network.
-  # shellcheck disable=SC2086
   semgrep --metrics=off --disable-version-check --quiet --error \
-    --config "$ROOT/security/scanners/semgrep/rules" $STAGED
+    --config "$ROOT/security/scanners/semgrep/rules" -- "${STAGED_ARGS[@]}"
   rc=$?
   # 1 = findings, 2+ = the scan failed. A broken scanner must be loud, not blocking.
   if [ $rc -eq 1 ]; then FAIL=1

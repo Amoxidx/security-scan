@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { complete, resolveModel, listUnavailable } from './providers.mjs';
+import { resolveRepoFile } from './path-safe.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -68,7 +69,8 @@ if (!target) {
 
 /** The flagged line plus enough around it to judge reachability. */
 function codeContext(file, line, radius = 25) {
-  const path = join(repoRoot, file);
+  const path = resolveRepoFile(repoRoot, file);
+  if (!path) return '(path rejected — outside repository or unsafe)';
   if (!existsSync(path)) return '(file not found)';
   const lines = readFileSync(path, 'utf8').split('\n');
   const from = Math.max(0, line - radius);
@@ -143,19 +145,75 @@ const triaged = await Promise.all(findings.map(triage));
 const blockOn = config.gate.blockOn || ['critical', 'high', 'error'];
 const dropped = triaged.filter((f) => f.verdict === 'false_positive');
 const kept = triaged.filter((f) => BLOCKING_VERDICTS.has(f.verdict));
-// Block if model severity OR original scanner severity is in blockOn — never weaker than
-// the passthrough path that runs when no triage model is available.
-const blocking = kept.filter(
-  (f) => blockOn.includes(f.severity) || blockOn.includes(f.scannerSeverity || f.severity)
-);
+
+/**
+ * Gate decision — never weaker than the scanner stage.
+ *
+ * A model may mark a finding `false_positive` for prioritisation and audit, but a scanner
+ * severity that is already in blockOn still blocks. Otherwise a single model (or a
+ * prompt-injection against triage) can silence a deterministic ERROR and turn the check green.
+ * Soft severities (warning/note) remain dismissible when the model is confident.
+ */
+function isBlocking(f) {
+  const scannerSev = f.scannerSeverity || f.severity;
+  if (blockOn.includes(scannerSev)) return true;
+  if (!BLOCKING_VERDICTS.has(f.verdict)) return false;
+  return blockOn.includes(f.severity);
+}
+
+const blocking = triaged.filter(isBlocking);
+const dismissedButBlocked = blocking.filter((f) => f.verdict === 'false_positive');
+
+/**
+ * Artifact shape for the triage report. Only allowlisted scalar fields, length-capped.
+ * Model/network output must not be written through wholesale — that is both a CodeQL
+ * taint sink and a way for a prompt-injected model to plant arbitrary content in CI
+ * artifacts.
+ */
+function artifactRecord(f) {
+  const s = (v, n = 2000) => String(v ?? '').slice(0, n);
+  return {
+    tool: s(f.tool, 64),
+    ruleId: s(f.ruleId, 256),
+    file: s(f.file, 1024),
+    line: Number.isFinite(Number(f.line)) ? Number(f.line) : 0,
+    severity: s(f.severity, 32),
+    scannerSeverity: s(f.scannerSeverity || f.severity, 32),
+    verdict: s(f.verdict, 32),
+    reason: s(f.reason, 2000),
+    message: s(f.message, 2000),
+    cwe: f.cwe == null ? null : s(f.cwe, 64),
+    class: f.class == null ? null : s(f.class, 64),
+  };
+}
 
 mkdirSync(dirname(outPath), { recursive: true });
-writeFileSync(outPath, JSON.stringify({ triaged, dropped: dropped.length, blocking: blocking.length }, null, 2));
+writeFileSync(
+  outPath,
+  JSON.stringify(
+    {
+      triaged: triaged.map(artifactRecord),
+      dropped: dropped.length,
+      blocking: blocking.length,
+      dismissedButBlocked: dismissedButBlocked.length,
+    },
+    null,
+    2
+  )
+);
 
-console.log(`${findings.length} findings -> ${dropped.length} dismissed -> ${kept.length} kept -> ${blocking.length} blocking`);
+console.log(
+  `${findings.length} findings -> ${dropped.length} dismissed -> ${kept.length} kept -> ${blocking.length} blocking` +
+    (dismissedButBlocked.length
+      ? ` (${dismissedButBlocked.length} scanner-severity overrides of false_positive)`
+      : '')
+);
 if (dropped.length) {
-  console.log('\nDismissed (recorded in the artifact, not discarded):');
-  for (const f of dropped) console.log(`  ${f.file}:${f.line} ${f.ruleId}\n    ${f.reason}`);
+  console.log('\nDismissed (recorded in the artifact; scanner blockOn still applies):');
+  for (const f of dropped) {
+    const override = blockOn.includes(f.scannerSeverity || f.severity) ? ' [still blocking]' : '';
+    console.log(`  ${f.file}:${f.line} ${f.ruleId}${override}\n    ${f.reason}`);
+  }
 }
 if (blocking.length) {
   console.log('\nBLOCKING:');

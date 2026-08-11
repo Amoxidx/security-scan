@@ -36,9 +36,35 @@ const REPO = resolve(HERE, '../..');
 const CORPUS = join(REPO, 'security/eval/corpus');
 const REDTEAM_CONFIG = JSON.parse(readFileSync(join(REPO, 'security/redteam/config.json'), 'utf8'));
 
-/** Clear every provider apiKeyEnv from config, plus the CI tokens a probe must never see. */
+/**
+ * Minimal environment for probes — allowlist, not denylist.
+ * Spreading process.env would hand the probe every secret the runner holds; clearing a few
+ * known names is not enough when CI injects arbitrary SECRET_* variables.
+ */
 function probeEnv() {
-  const env = { ...process.env, GITHUB_TOKEN: '', GH_TOKEN: '' };
+  const keep = [
+    'PATH',
+    'HOME',
+    'TMPDIR',
+    'TEMP',
+    'TMP',
+    'LANG',
+    'LC_ALL',
+    'LC_CTYPE',
+    'TERM',
+    'USER',
+    'LOGNAME',
+    'NODE_OPTIONS',
+    'npm_config_cache',
+  ];
+  const env = {};
+  for (const k of keep) {
+    if (process.env[k] !== undefined) env[k] = process.env[k];
+  }
+  // Never pass CI or model credentials, even if they appear in keep by misconfiguration.
+  env.GITHUB_TOKEN = '';
+  env.GH_TOKEN = '';
+  env.NODE_OPTIONS = '';
   for (const p of Object.values(REDTEAM_CONFIG.providers || {})) {
     if (p.apiKeyEnv) env[p.apiKeyEnv] = '';
   }

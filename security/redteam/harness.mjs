@@ -55,11 +55,27 @@ if (!diff.trim()) {
   console.log('Empty diff — nothing to review.');
   process.exit(0);
 }
-if (diff.length > config.gate.maxDiffBytes) {
-  console.log(
+const truncated = diff.length > config.gate.maxDiffBytes;
+// Default: a truncated review is not a clean pass. Large PRs must be split or reviewed by a human;
+// silently scoring only the first chunk would green-light the unreviewed tail.
+const blockOnTruncated = config.gate.blockOnTruncatedDiff !== false;
+if (truncated) {
+  const msg =
     `Diff is ${diff.length} bytes, over the ${config.gate.maxDiffBytes} byte limit. ` +
-      'Reviewing the first chunk only; flag this PR for manual review.'
-  );
+    (blockOnTruncated
+      ? 'Blocking — split the change or raise gate.maxDiffBytes after a manual review.'
+      : 'Reviewing the first chunk only; flag this PR for manual review.');
+  console.log(msg);
+  if (blockOnTruncated) {
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(join(outDir, 'findings.json'), '[]');
+    writeFileSync(
+      join(outDir, 'report.md'),
+      `## AI security review\n\n**Blocked:** diff exceeds \`gate.maxDiffBytes\` ` +
+        `(${diff.length} > ${config.gate.maxDiffBytes}). The unreviewed tail must not pass silently.\n`
+    );
+    process.exit(1);
+  }
 }
 const diffText = diff.slice(0, config.gate.maxDiffBytes);
 
@@ -220,11 +236,12 @@ async function verify(finding) {
 // ---------------------------------------------------------------- stage 5: report
 
 async function report(finding) {
+  // Findings and verdicts are model- or diff-derived — treat as untrusted input, same as hunt/verify.
   const user = reportPrompt
-    .replace('{{FINDING}}', JSON.stringify(finding, null, 2))
-    .replace('{{VERDICT}}', JSON.stringify(finding.verdicts, null, 2))
-    .replace('{{REPRO}}', JSON.stringify({ reproducible: false, blocker: 'repro stage not run in CI' }))
-    .replace('{{REPRO_OUTPUT}}', '(none)');
+    .replace('{{FINDING}}', wrapUntrusted(JSON.stringify(finding, null, 2)))
+    .replace('{{VERDICT}}', wrapUntrusted(JSON.stringify(finding.verdicts, null, 2)))
+    .replace('{{REPRO}}', wrapUntrusted(JSON.stringify({ reproducible: false, blocker: 'repro stage not run in CI' })))
+    .replace('{{REPRO_OUTPUT}}', wrapUntrusted('(none)'));
   const target = resolveModel(config, config.report.model);
   if (!target) {
     return `## ${finding.title}\n\n_No report model available. Raw finding:_\n\n\`\`\`json\n${JSON.stringify(finding, null, 2)}\n\`\`\``;

@@ -881,6 +881,306 @@ mkdir -p "$EVAL_OUT"
   fi
 }
 
+# ---------------------------------------------------------------- 24–26: triage never drops scanner blockOn (H1)
+
+echo "=== triage scanner severity override (H1) ==="
+
+{
+  TDIR="$WORK/h1-fp-override"
+  mkdir -p "$TDIR/bin" "$TDIR/src" "$TDIR/out"
+  # Model confidently dismisses the finding — scanner severity must still block.
+  cat > "$TDIR/bin/fake-triage" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"verdict":"false_positive","severity":"low","reason":"looks fine to me","reachable_from":null,"what_would_change_my_mind":"n/a"}'
+EOF
+  chmod +x "$TDIR/bin/fake-triage"
+
+  cat > "$TDIR/config.json" <<EOF
+{
+  "defaultProvider": "fake",
+  "maxConcurrency": 1,
+  "providers": {
+    "fake": {
+      "type": "cli",
+      "command": ["$TDIR/bin/fake-triage"],
+      "timeoutMs": 10000
+    }
+  },
+  "gate": { "blockOn": ["critical", "high", "error"], "maxDiffBytes": 400000 },
+  "triage": { "model": "fake:m" },
+  "report": { "model": "fake:m" },
+  "hunt": { "lenses": [], "models": {} },
+  "verify": { "models": [], "refuteThreshold": 2 }
+}
+EOF
+
+  echo "const x = 1;" > "$TDIR/src/app.js"
+  cat > "$TDIR/findings.json" <<'EOF'
+{
+  "findings": [
+    {
+      "tool": "semgrep",
+      "ruleId": "test.rule",
+      "file": "src/app.js",
+      "line": 1,
+      "severity": "error",
+      "message": "test finding",
+      "cwe": null,
+      "class": null
+    }
+  ]
+}
+EOF
+
+  run node "$TRIAGE" \
+    --findings "$TDIR/findings.json" \
+    --repo "$TDIR" \
+    --out "$TDIR/out/triaged.json" \
+    --config "$TDIR/config.json"
+
+  BLOCKING="0"
+  OVERRIDE="0"
+  if [ -f "$TDIR/out/triaged.json" ]; then
+    BLOCKING="$(node -e "const j=require('$TDIR/out/triaged.json'); process.stdout.write(String(j.blocking||0))")"
+    OVERRIDE="$(node -e "const j=require('$TDIR/out/triaged.json'); process.stdout.write(String(j.dismissedButBlocked||0))")"
+  fi
+  if [ "$RUN_RC" -eq 1 ] && [ "$BLOCKING" = "1" ] && [ "$OVERRIDE" = "1" ]; then
+    case_result "H1: false_positive cannot drop scanner error severity" 1
+  else
+    case_result "H1: false_positive cannot drop scanner error severity" 0 \
+      "rc=$RUN_RC blocking=$BLOCKING override=$OVERRIDE out=$(short "$RUN_OUT")"
+  fi
+}
+
+# Counter: false_positive on warning severity is allowed to stay non-blocking.
+{
+  TDIR="$WORK/h1-fp-warning"
+  mkdir -p "$TDIR/bin" "$TDIR/src" "$TDIR/out"
+  cat > "$TDIR/bin/fake-triage" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"verdict":"false_positive","severity":"low","reason":"benign","reachable_from":null,"what_would_change_my_mind":"n/a"}'
+EOF
+  chmod +x "$TDIR/bin/fake-triage"
+
+  cat > "$TDIR/config.json" <<EOF
+{
+  "defaultProvider": "fake",
+  "maxConcurrency": 1,
+  "providers": {
+    "fake": {
+      "type": "cli",
+      "command": ["$TDIR/bin/fake-triage"],
+      "timeoutMs": 10000
+    }
+  },
+  "gate": { "blockOn": ["critical", "high", "error"], "maxDiffBytes": 400000 },
+  "triage": { "model": "fake:m" },
+  "report": { "model": "fake:m" },
+  "hunt": { "lenses": [], "models": {} },
+  "verify": { "models": [], "refuteThreshold": 2 }
+}
+EOF
+
+  echo "const x = 1;" > "$TDIR/src/app.js"
+  cat > "$TDIR/findings.json" <<'EOF'
+{
+  "findings": [
+    {
+      "tool": "semgrep",
+      "ruleId": "test.warn",
+      "file": "src/app.js",
+      "line": 1,
+      "severity": "warning",
+      "message": "soft finding",
+      "cwe": null,
+      "class": null
+    }
+  ]
+}
+EOF
+
+  run node "$TRIAGE" \
+    --findings "$TDIR/findings.json" \
+    --repo "$TDIR" \
+    --out "$TDIR/out/triaged.json" \
+    --config "$TDIR/config.json"
+
+  BLOCKING="x"
+  if [ -f "$TDIR/out/triaged.json" ]; then
+    BLOCKING="$(node -e "const j=require('$TDIR/out/triaged.json'); process.stdout.write(String(j.blocking||0))")"
+  fi
+  if [ "$RUN_RC" -eq 0 ] && [ "$BLOCKING" = "0" ]; then
+    case_result "H1-counter: false_positive may dismiss non-blockOn severity" 1
+  else
+    case_result "H1-counter: false_positive may dismiss non-blockOn severity" 0 \
+      "rc=$RUN_RC blocking=$BLOCKING out=$(short "$RUN_OUT")"
+  fi
+}
+
+# ---------------------------------------------------------------- 27–28: path containment (H2)
+
+echo "=== path-safe resolveRepoFile (H2) ==="
+
+{
+  PATH_SAFE="$ROOT/security/redteam/path-safe.mjs"
+  H2ROOT="$WORK/h2-root"
+  mkdir -p "$H2ROOT/src"
+  echo 'export const x = 1;' > "$H2ROOT/src/app.js"
+  run node --input-type=module -e "
+    import { resolveRepoFile } from 'file://$PATH_SAFE';
+    import { resolve } from 'node:path';
+    import { realpathSync } from 'node:fs';
+    const root = resolve('$H2ROOT');
+    // macOS: /var -> /private/var; resolveRepoFile returns realpath for existing files.
+    const realRoot = realpathSync(root);
+    const ok = [];
+    const fail = [];
+    const expectNull = (label, file) => {
+      const r = resolveRepoFile(root, file);
+      if (r === null) ok.push(label); else fail.push(label + '=>' + r);
+    };
+    const expectOk = (label, file) => {
+      const r = resolveRepoFile(root, file);
+      if (r && (r === realpathSync(resolve(root, file)) || r.startsWith(realRoot + '/') || r === realRoot)) {
+        ok.push(label);
+      } else fail.push(label + '=>' + r);
+    };
+    expectNull('traversal', '../../../etc/passwd');
+    expectNull('abs', '/etc/passwd');
+    expectNull('fileuri', 'file:///etc/passwd');
+    expectNull('scheme', 'https://evil.example/x');
+    expectNull('nullbyte', 'src/a\\x00.js');
+    expectOk('relative', 'src/app.js');
+    if (fail.length) {
+      console.error('FAIL', fail.join('; '));
+      process.exit(1);
+    }
+    console.log('ok', ok.length);
+    process.exit(0);
+  "
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "H2: resolveRepoFile rejects traversal and absolute paths" 1
+  else
+    case_result "H2: resolveRepoFile rejects traversal and absolute paths" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# Symlink whose target is outside the repo must be rejected (review finding 1).
+{
+  PATH_SAFE="$ROOT/security/redteam/path-safe.mjs"
+  H2SYM="$WORK/h2-symlink"
+  mkdir -p "$H2SYM/src"
+  # Tracked-style symlink: lexical path inside repo, real target outside.
+  ln -s /etc/passwd "$H2SYM/src/evil.js" 2>/dev/null || ln -s /etc/hosts "$H2SYM/src/evil.js"
+  run node --input-type=module -e "
+    import { resolveRepoFile } from 'file://$PATH_SAFE';
+    import { resolve } from 'node:path';
+    const root = resolve('$H2SYM');
+    const r = resolveRepoFile(root, 'src/evil.js');
+    if (r !== null) {
+      console.error('symlink escape allowed ->', r);
+      process.exit(1);
+    }
+    // Control: a normal file still resolves.
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(resolve(root, 'src/ok.js'), 'ok');
+    const ok = resolveRepoFile(root, 'src/ok.js');
+    if (!ok) { console.error('normal file rejected'); process.exit(1); }
+    console.log('symlink rejected, normal ok');
+    process.exit(0);
+  "
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "H2: resolveRepoFile rejects symlink escape outside repo" 1
+  else
+    case_result "H2: resolveRepoFile rejects symlink escape outside repo" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# ---------------------------------------------------------------- 28: truncated diff blocks (M8)
+
+echo "=== harness truncated diff (M8) ==="
+
+{
+  HDIR="$WORK/m8-truncate"
+  mkdir -p "$HDIR/bin" "$HDIR/out"
+  cat > "$HDIR/bin/fake-hunt" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"findings":[]}'
+EOF
+  chmod +x "$HDIR/bin/fake-hunt"
+
+  cat > "$HDIR/config.json" <<EOF
+{
+  "defaultProvider": "hunt",
+  "maxConcurrency": 1,
+  "providers": {
+    "hunt": {
+      "type": "cli",
+      "command": ["$HDIR/bin/fake-hunt"],
+      "timeoutMs": 10000
+    }
+  },
+  "hunt": {
+    "lenses": ["fallback"],
+    "models": { "fallback": "hunt:m" }
+  },
+  "verify": { "models": [], "refuteThreshold": 1 },
+  "report": { "model": "hunt:m" },
+  "gate": { "blockOn": ["critical", "high", "error"], "maxDiffBytes": 50, "blockOnTruncatedDiff": true },
+  "triage": { "model": "hunt:m" }
+}
+EOF
+
+  # Diff larger than 50 bytes.
+  cat > "$HDIR/pr.diff" <<'EOF'
+diff --git a/src/x.js b/src/x.js
+--- a/src/x.js
++++ b/src/x.js
+@@ -0,0 +1,5 @@
++export const a = 1;
++export const b = 2;
++export const c = 3;
++export const d = 4;
++export const e = 5;
+EOF
+
+  run node "$HARNESS" \
+    --diff "$HDIR/pr.diff" \
+    --out "$HDIR/out" \
+    --config "$HDIR/config.json"
+
+  if [ "$RUN_RC" -eq 1 ] && echo "$RUN_OUT" | grep -qiE 'over the|Blocking|maxDiffBytes|byte limit'; then
+    case_result "M8: truncated diff blocks by default" 1
+  else
+    case_result "M8: truncated diff blocks by default" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# ---------------------------------------------------------------- 29: unknown host blocks (M3)
+
+echo "=== static-checks unknown host (M3) ==="
+
+{
+  make_repo "$WORK/m3-host"
+  BASE_SHA="$(git -C "$WORK/m3-host" rev-parse HEAD)"
+  commit_file "$WORK/m3-host" "src/client.js" \
+    "export const url = 'https://evil-exfil.example/collect';" \
+    "add host"
+  run bash -c "cd '$WORK/m3-host' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -ne 0 ] && echo "$RUN_OUT" | grep -qiE 'external host|BLOCK'; then
+    case_result "M3: unknown external host blocks" 1
+  else
+    case_result "M3: unknown external host blocks" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
 # ---------------------------------------------------------------- summary
 
 echo

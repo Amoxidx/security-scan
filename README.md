@@ -158,15 +158,21 @@ historische Fixes aus dem eigenen Repo treffen das eigene Bedrohungsmodell besse
 generische Korpus.
 
 **Ohne Required Checks ist das Ganze eine Empfehlung.** Ein roter Check hält niemanden auf,
-solange er nicht in den Branch-Protection-Rules steht. Hier sind `static`, `scanners` und
-`verify` gesetzt:
+solange er nicht in den Branch-Protection-Rules steht. Authority läuft **nur** über
+`workflow_run` vom Default-Branch (kein `pull_request`-Trigger am Gate-Workflow — sonst
+könnte ein same-repo-PR die Required-Namen selbst grün melden). Check-Namen auf dem
+PR-Head: `static`, `scanners`, `verify`:
 
 ```bash
 gh api -X PUT repos/<owner>/<repo>/branches/<branch>/protection --input - <<'JSON'
 {
   "required_status_checks": { "strict": false, "contexts": ["static", "scanners", "verify"] },
   "enforce_admins": false,
-  "required_pull_request_reviews": null,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "require_code_owner_reviews": true,
+    "dismiss_stale_reviews": true
+  },
   "restrictions": null,
   "allow_force_pushes": false,
   "allow_deletions": false
@@ -174,10 +180,9 @@ gh api -X PUT repos/<owner>/<repo>/branches/<branch>/protection --input - <<'JSO
 JSON
 ```
 
-`strict: false` verlangt keinen Rebase vor jedem Merge; `enforce_admins: false` lässt
-Administratoren im Notfall daran vorbei. Wer Reviews erzwingen will, füllt
-`required_pull_request_reviews` mit `require_code_owner_reviews` — `.github/CODEOWNERS` trägt
-sonst nur Reviewer ein, ohne dass ihre Zustimmung den Merge aufhält.
+`require_code_owner_reviews: true` macht `.github/CODEOWNERS` bindend — ohne das ist die
+Datei nur eine Vorschlagsliste. Environment `security-ai` (für `ai-review`) kann zusätzlich
+Required Reviewers bekommen, bevor Model-Keys fließen.
 
 ---
 
