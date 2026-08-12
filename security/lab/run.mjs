@@ -104,13 +104,6 @@ const findingPath = resolve(args.finding);
 const codeDir = resolve(args['code-dir']);
 const outDir = resolve(args.out || 'security-lab-report');
 const configPath = resolve(args.config || DEFAULT_CONFIG);
-const modelSpec = args.model || 'ollama:qwen3-coder-next:q4_K_M';
-const maxTurns = Math.max(0, Number(args['max-turns'] ?? 6));
-const timeoutS = Math.max(1, Number(args['timeout-s'] ?? 600));
-const sandboxTimeoutS = Math.max(1, Number(args['sandbox-timeout-s'] ?? 60));
-const memory = String(args.memory || '512m');
-const cpus = String(args.cpus || '1');
-const image = String(args.image || DEFAULT_IMAGE);
 const keepWorkdir = Boolean(args['keep-workdir']);
 const diffPath = args.diff ? resolve(args.diff) : null;
 
@@ -121,6 +114,14 @@ if (!existsSync(configPath)) usage(`config not found: ${configPath}`);
 // ---------------------------------------------------------------- load inputs
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
+const labCfg = config.lab || {};
+const modelSpec = args.model || labCfg.model || 'ollama:qwen3-coder-next:q4_K_M';
+const maxTurns = Math.max(0, Number(args['max-turns'] ?? labCfg.maxTurns ?? 6));
+const timeoutS = Math.max(1, Number(args['timeout-s'] ?? labCfg.timeoutS ?? 600));
+const sandboxTimeoutS = Math.max(1, Number(args['sandbox-timeout-s'] ?? 60));
+const memory = String(args.memory || '512m');
+const cpus = String(args.cpus || '1');
+const image = String(args.image || DEFAULT_IMAGE);
 const finding = JSON.parse(readFileSync(findingPath, 'utf8'));
 const systemPrompt = readFileSync(PROMPT_PATH, 'utf8');
 const diffText = diffPath && existsSync(diffPath) ? readFileSync(diffPath, 'utf8') : '';
@@ -597,6 +598,21 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
     sandbox: sandboxResult,
   });
 
+  // Count consecutive non-zero exits with essentially the same script — Qwen often
+  // re-emits the same repro instead of concluding. After two identical fails, force conclude.
+  const sameFailStreak = (() => {
+    if (sandboxResult.exitCode === 0) return 0;
+    let streak = 1;
+    for (let i = turns.length - 2; i >= 0; i -= 1) {
+      const prev = turns[i];
+      if (prev.action !== 'execute' || !prev.sandbox || prev.sandbox.exitCode === 0) break;
+      const prevScript = String(prev.script || '').trim();
+      if (prevScript && prevScript === script.trim()) streak += 1;
+      else break;
+    }
+    return streak;
+  })();
+
   const decisiveHint = sandboxResult.exitCode === 0
     ? [
         'exitCode is 0. Under the contract this means the bug is PRESENT.',
@@ -604,10 +620,18 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
         'your next reply MUST be action conclude with verdict reproduced.',
         'Example: {"action":"conclude","verdict":"reproduced","reasoning":"sandbox exit 0 after asserting <property>","blocker":null}',
       ].join(' ')
-    : [
-        'exitCode is non-zero. Either the defect is absent or the script is wrong.',
-        'Fix the script with another execute, or conclude not-reproduced if the test was fair.',
-      ].join(' ');
+    : sameFailStreak >= 2
+      ? [
+          `exitCode is non-zero for the ${sameFailStreak}rd consecutive time with the same script.`,
+          'The fair test failed: the defect is ABSENT given this code, or the claim is wrong.',
+          'Your next reply MUST be action conclude with verdict not-reproduced (or inconclusive if the environment blocked a fair test).',
+          'Do NOT re-emit the same script. Example:',
+          '{"action":"conclude","verdict":"not-reproduced","reasoning":"fair assertion did not hold after N runs","blocker":null}',
+        ].join(' ')
+      : [
+          'exitCode is non-zero. Either the defect is absent or the script is wrong.',
+          'Fix the script with another execute once, or conclude not-reproduced if the test was already fair.',
+        ].join(' ');
 
   userMessage = [
     'Sandbox result for your last execute action:',
@@ -620,6 +644,7 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
       stderr: (sandboxResult.stderr || '').slice(0, 4000),
       error: sandboxResult.error || null,
       network: 'none',
+      sameFailStreak,
     }, null, 2)),
     '',
     'Your script that just ran was:',

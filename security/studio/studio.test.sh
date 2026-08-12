@@ -211,6 +211,64 @@ EOF
   fi
 }
 
+echo "=== resolveLabModelSpec (config default + ollama preference) ==="
+{
+  cat > "$WORK/lab-model-test.mjs" <<'EOF'
+import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+
+async function main() {
+  const modPath = process.argv[2];
+  const configPath = process.argv[3];
+  const m = await import(pathToFileURL(modPath).href);
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  if (!config.lab?.model?.includes('qwen3-coder-next')) {
+    console.error('config.lab.model missing/wrong', config.lab);
+    process.exit(1);
+  }
+  const explicit = m.resolveLabModelSpec(config, 'ollama:forced-model');
+  if (explicit !== 'ollama:forced-model') {
+    console.error('explicit override failed', explicit);
+    process.exit(1);
+  }
+  // No live tags: empty available list → configured default.
+  const offline = m.resolveLabModelSpec(
+    { lab: { model: 'ollama:qwen3-coder-next:q4_K_M', preferredModels: [] } },
+    null,
+    { available: [] },
+  );
+  if (offline !== 'ollama:qwen3-coder-next:q4_K_M') {
+    console.error('offline default failed', offline);
+    process.exit(1);
+  }
+  // Prefer exact primary when present.
+  const primary = m.resolveLabModelSpec(config, null, {
+    available: ['qwen3-coder-next:q4_K_M', 'qwen2.5:7b-instruct'],
+  });
+  if (primary !== 'ollama:qwen3-coder-next:q4_K_M') {
+    console.error('primary pick failed', primary);
+    process.exit(1);
+  }
+  // Fall back to frob tag when primary missing.
+  const fallback = m.resolveLabModelSpec(config, null, {
+    available: ['frob/qwen3-coder-next:80b-a3b-q5_K_M', 'qwen3:32b'],
+  });
+  if (fallback !== 'ollama:frob/qwen3-coder-next:80b-a3b-q5_K_M') {
+    console.error('fallback pick failed', fallback);
+    process.exit(1);
+  }
+  console.log(JSON.stringify({ explicit, offline, primary, fallback, configDefault: config.lab.model }));
+}
+main().catch((e) => { console.error(e); process.exit(1); });
+EOF
+  run node "$WORK/lab-model-test.mjs" "$ROOT/security/studio/lab-model.mjs" "$ROOT/security/redteam/config.json"
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'qwen3-coder-next'; then
+    case_result "resolveLabModelSpec uses config.lab + explicit override" 1
+  else
+    case_result "resolveLabModelSpec uses config.lab + explicit override" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
 echo "=== targets.mjs ==="
 {
   cat > "$WORK/targets-test.mjs" <<'EOF'

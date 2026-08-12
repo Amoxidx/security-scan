@@ -14,6 +14,9 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# Preferred lab model tag on Studio (must match security/redteam/config.json → lab.model).
+LAB_MODEL_DEFAULT="${SECURITY_LAB_MODEL:-qwen3-coder-next:q4_K_M}"
+
 CHECK_ONLY=0
 if [ "${1:-}" = "--check" ]; then
   CHECK_ONLY=1
@@ -21,6 +24,9 @@ elif [ -n "${1:-}" ]; then
   echo "Usage: security/studio/bootstrap.sh [--check]" >&2
   exit 2
 fi
+
+# Non-interactive Studio shells often miss brew / OrbStack / go bins.
+export PATH="${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/opt/docker/bin:${HOME}/go/bin:${PATH:-}"
 
 PASS=0
 FAIL=0
@@ -33,13 +39,18 @@ head() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Resolved docker binary for daemon checks (set by ensure_path_docker).
+DOCKER_RESOLVED=""
+
 link_docker() {
   # brew formula often lives under Cellar without a PATH link on non-interactive shells.
+  # OrbStack installs a shim at /usr/local/bin/docker.
   local candidates=(
-    /opt/homebrew/bin/docker
     /usr/local/bin/docker
+    /opt/homebrew/bin/docker
     /opt/homebrew/opt/docker/bin/docker
     /usr/local/opt/docker/bin/docker
+    "${HOME}/.docker/bin/docker"
   )
   local bin
   for bin in "${candidates[@]}"; do
@@ -61,26 +72,81 @@ link_docker() {
 ensure_path_docker() {
   local bin
   if have docker; then
-    ok "docker on PATH: $(command -v docker)"
+    DOCKER_RESOLVED="$(command -v docker)"
+    export DOCKER_BIN="${DOCKER_BIN:-$DOCKER_RESOLVED}"
+    ok "docker on PATH: $DOCKER_RESOLVED"
     return 0
   fi
   if ! bin="$(link_docker)"; then
     fail "docker CLI not found (brew install docker, or install OrbStack/Docker Desktop)"
     return 1
   fi
+  DOCKER_RESOLVED="$bin"
+  export DOCKER_BIN="$bin"
   if [ "$CHECK_ONLY" = 1 ]; then
-    warn "docker exists at $bin but is not on PATH — export DOCKER_BIN=$bin or add to PATH"
+    # Still usable for daemon probe via DOCKER_BIN / absolute path.
+    ok "docker off-PATH at $bin (DOCKER_BIN set for this session)"
     return 0
   fi
   mkdir -p "$HOME/.local/bin"
   ln -sfn "$bin" "$HOME/.local/bin/docker"
   export PATH="$HOME/.local/bin:$PATH"
   if have docker; then
+    DOCKER_RESOLVED="$(command -v docker)"
+    export DOCKER_BIN="$DOCKER_RESOLVED"
     ok "linked docker → $HOME/.local/bin/docker ($bin)"
   else
     fail "could not put docker on PATH from $bin"
     return 1
   fi
+}
+
+# Returns 0 if a model name matching the needle is present (via API tags, then ollama list).
+ollama_has_model() {
+  local needle="$1"
+  local tags
+  tags="$(curl -sf --max-time 3 http://127.0.0.1:11434/api/tags 2>/dev/null || true)"
+  if [ -n "$tags" ]; then
+    printf '%s' "$tags" | grep -q "$needle" && return 0
+  fi
+  ollama list 2>/dev/null | grep -q "$needle"
+}
+
+docker_info_ok() {
+  local bin="${1:-}"
+  local sock="${HOME}/.colima/default/docker.sock"
+  # Under `set -u`, empty arrays cannot be expanded as "${arr[@]}" on bash 3.2 / some 5.x.
+  # Always prefix with `env` and only inject DOCKER_HOST when the colima socket exists.
+  local -a run_prefix=(env)
+  if [ -S "$sock" ]; then
+    run_prefix=(env "DOCKER_HOST=unix://${sock}")
+  fi
+  try_docker() {
+    local d="$1"
+    [ -n "$d" ] && [ -x "$d" ] || return 1
+    "${run_prefix[@]}" "$d" info >/dev/null 2>&1
+  }
+  if try_docker "$bin"; then return 0; fi
+  if have docker && try_docker "$(command -v docker)"; then return 0; fi
+  local cand
+  for cand in \
+    "${DOCKER_BIN:-}" \
+    "$HOME/.local/bin/docker" \
+    /usr/local/bin/docker \
+    /opt/homebrew/bin/docker \
+    /opt/homebrew/opt/docker/bin/docker
+  do
+    if try_docker "$cand"; then return 0; fi
+  done
+  return 1
+}
+
+colima_is_running() {
+  # Prefer the docker socket — `colima status` exit codes vary by version.
+  if [ -S "${HOME}/.colima/default/docker.sock" ]; then
+    return 0
+  fi
+  colima status 2>/dev/null | grep -qi 'running'
 }
 
 install_scanners() {
@@ -207,21 +273,7 @@ check_lab() {
   head "Local lab (Ollama + sandbox)"
   if have ollama; then
     ok "ollama present"
-    if ollama list 2>/dev/null | grep -q 'qwen3-coder-next'; then
-      ok "qwen3-coder-next model available"
-    else
-      if [ "$CHECK_ONLY" = 1 ]; then
-        warn "qwen3-coder-next not pulled (ollama pull qwen3-coder-next:q4_K_M)"
-      else
-        echo "  pulling qwen3-coder-next:q4_K_M (large — may take a while)..."
-        if ollama pull qwen3-coder-next:q4_K_M; then
-          ok "model pulled"
-        else
-          warn "model pull failed — lab will be unavailable until fixed"
-        fi
-      fi
-    fi
-    if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    if curl -sf --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
       ok "ollama serving on :11434"
     else
       if [ "$CHECK_ONLY" = 1 ]; then
@@ -230,10 +282,27 @@ check_lab() {
         echo "  starting ollama serve in background..."
         nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
         sleep 2
-        if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+        if curl -sf --max-time 3 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
           ok "ollama serve started"
         else
           warn "could not start ollama serve — see /tmp/ollama-serve.log"
+        fi
+      fi
+    fi
+    # Prefer the exact Studio tag, then any qwen3-coder-next variant.
+    if ollama_has_model "$LAB_MODEL_DEFAULT"; then
+      ok "lab model available: $LAB_MODEL_DEFAULT"
+    elif ollama_has_model 'qwen3-coder-next'; then
+      ok "qwen3-coder-next variant available (preferred tag: $LAB_MODEL_DEFAULT)"
+    else
+      if [ "$CHECK_ONLY" = 1 ]; then
+        warn "lab model missing — ollama pull $LAB_MODEL_DEFAULT"
+      else
+        echo "  pulling $LAB_MODEL_DEFAULT (large — may take a while)..."
+        if ollama pull "$LAB_MODEL_DEFAULT"; then
+          ok "model pulled: $LAB_MODEL_DEFAULT"
+        else
+          warn "model pull failed — lab will be unavailable until fixed"
         fi
       fi
     fi
@@ -242,8 +311,8 @@ check_lab() {
   fi
 
   if have colima; then
-    if colima status 2>/dev/null | grep -qi 'running'; then
-      ok "colima running"
+    if colima_is_running; then
+      ok "colima running (socket or status)"
     else
       if [ "$CHECK_ONLY" = 1 ]; then
         warn "colima not running (colima start)"
@@ -258,10 +327,11 @@ check_lab() {
 
   ensure_path_docker || true
 
-  if have docker || [ -n "${DOCKER_BIN:-}" ]; then
-    export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/default/docker.sock}"
-    if docker info >/dev/null 2>&1 || "$HOME/.local/bin/docker" info >/dev/null 2>&1 || \
-       /opt/homebrew/opt/docker/bin/docker info >/dev/null 2>&1; then
+  if [ -n "${DOCKER_RESOLVED:-}" ] || have docker || [ -n "${DOCKER_BIN:-}" ]; then
+    if [ -S "${HOME}/.colima/default/docker.sock" ]; then
+      export DOCKER_HOST="${DOCKER_HOST:-unix://${HOME}/.colima/default/docker.sock}"
+    fi
+    if docker_info_ok "${DOCKER_RESOLVED:-${DOCKER_BIN:-}}"; then
       ok "docker daemon reachable"
     else
       fail "docker CLI found but daemon not reachable (colima start / Docker Desktop)"
@@ -307,6 +377,7 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 printf '\033[32mStudio ready.\033[0m Run a PR check:\n'
-printf '  node security/studio/check-pr.mjs --pr <N> --repo <owner/name> --post\n'
-printf '  node security/studio/check-pr.mjs --local --base origin/master\n'
+printf '  node security/studio/check-pr.mjs --target dfx-api --pr <N> --post\n'
+printf '  node security/studio/check-pr.mjs --local --target security-scan --base origin/master\n'
+printf '  Lab model default: ollama:%s\n' "$LAB_MODEL_DEFAULT"
 exit 0
