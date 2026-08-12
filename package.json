@@ -9,7 +9,12 @@
     "gate": "security/gate/static-checks.sh",
     "review": "node security/redteam/harness.mjs",
     "eval": "node security/eval/run.mjs",
-    "eval:static": "node security/eval/run.mjs --no-ai"
+    "eval:static": "node security/eval/run.mjs --no-ai",
+    "studio:bootstrap": "security/studio/bootstrap.sh",
+    "studio:doctor": "security/studio/bootstrap.sh --check",
+    "studio:check": "node security/studio/check-pr.mjs",
+    "studio:targets": "node security/studio/check-pr.mjs --list-targets",
+    "studio:test": "bash security/studio/studio.test.sh"
   },
   "license": "MIT"
 }

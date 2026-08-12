@@ -156,10 +156,21 @@ say '6. New outbound endpoints in added lines'
 # Code only: a link in a markdown file is a citation, not an exfiltration channel.
 # Unknown hosts block: a warn-only check never stops exfiltration endpoints. Adopters
 # extend the allowlist below for their own APIs (see security/README.md).
-HOST_ALLOW='(github\.com|githubusercontent\.com|npmjs\.(org|com)|schema\.org|www\.w3\.org|opensource\.org|api\.moonshot\.ai|api\.anthropic\.com|api\.openai\.com|opencode\.ai|localhost|127\.0\.0\.1)'
+# Base allowlist for this gate. Adopters / Studio targets extend via
+# SECURITY_HOST_ALLOW_EXTRA (pipe-separated regex fragments, no outer parens),
+# e.g. SECURITY_HOST_ALLOW_EXTRA='api\.dfx\.swiss|dev\.dfx\.swiss'
+HOST_ALLOW_CORE='github\.com|githubusercontent\.com|npmjs\.(org|com)|schema\.org|www\.w3\.org|opensource\.org|api\.moonshot\.ai|api\.anthropic\.com|api\.openai\.com|opencode\.ai|localhost|127\.0\.0\.1'
+if [ -n "${SECURITY_HOST_ALLOW_EXTRA:-}" ]; then
+  HOST_ALLOW="(${HOST_ALLOW_CORE}|${SECURITY_HOST_ALLOW_EXTRA})"
+else
+  HOST_ALLOW="(${HOST_ALLOW_CORE})"
+fi
 if HITS=$(echo "$CODE_ADDED" | grep -noE 'https?://[a-zA-Z0-9.-]+' | sort -u -t: -k2 | grep -vE "$HOST_ALLOW"); then
   fail 'new external hosts in code — extend the allowlist only when intentional:'
   echo "$HITS" | sed 's/^/         /' | cut -c1-160
+  if [ -n "${SECURITY_HOST_ALLOW_EXTRA:-}" ]; then
+    warn "SECURITY_HOST_ALLOW_EXTRA is set but did not cover the host(s) above"
+  fi
 else
   ok 'no unexpected external hosts'
 fi
