@@ -111,6 +111,7 @@ cmd_status() {
   echo "  state:            $STATE_FILE"
   echo "  targets:"
   cfg_get targets | sed 's/^/    - /'
+  echo
   echo "  orgs:"
   jq -r '(.orgs // [])[] | "    - \(.org) (exclude: \((.exclude // [])|join(", ")))"' "$CFG_FILE" 2>/dev/null || echo "    - (none)"
   if [ -f "$STATE_FILE" ]; then
