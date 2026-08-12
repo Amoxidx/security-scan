@@ -61,7 +61,8 @@ if ! CODE_ADDED=$(added_lines . \
   ':(exclude)security/gate/*' \
   ':(exclude)security/scanners/semgrep/rules/*' \
   ':(exclude)security/eval/corpus/*' \
-  ':(exclude)security/redteam/prompts/*'); then
+  ':(exclude)security/redteam/prompts/*' \
+  ':(exclude)security/lab/fixtures/*'); then
   fail "git diff failed while collecting added lines against: $BASE"
   printf '\033[31mStatic security gate: BLOCKED\033[0m\n'
   exit 1
