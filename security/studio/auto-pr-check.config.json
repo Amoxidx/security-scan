@@ -1,0 +1,11 @@
+{
+  "$comment": "Studio auto-check for open, non-draft (ready-for-review) PRs. Kill switch: ~/.config/security-scan/auto-pr-check.off or SECURITY_SCAN_AUTO_PR_CHECK=0. Default when the LaunchAgent is installed: ON.",
+  "targets": ["dfx-api", "dfx-services", "security-scan"],
+  "includeDrafts": false,
+  "postComment": false,
+  "skipAi": false,
+  "noLab": false,
+  "maxPrsPerTick": 2,
+  "intervalSeconds": 1800,
+  "label": "com.amoxidx.security-scan-auto-pr"
+}

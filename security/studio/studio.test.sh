@@ -43,6 +43,56 @@ short() { echo "$1" | tr '\n' ' ' | cut -c1-220; }
 
 set +e
 
+echo "=== auto-pr-check.sh kill switch (default ON) ==="
+{
+  AUTO="$ROOT/security/studio/auto-pr-check.sh"
+  if [ ! -f "$AUTO" ]; then
+    case_result "auto-pr-check.sh exists" 0 "missing"
+  else
+    run bash -n "$AUTO"
+    if [ "$RUN_RC" -eq 0 ]; then
+      case_result "auto-pr-check.sh bash -n" 1
+    else
+      case_result "auto-pr-check.sh bash -n" 0 "$(short "$RUN_OUT")"
+    fi
+    OFFF="$WORK/auto-off"
+    STATED="$WORK/auto-state"
+    run env SECURITY_SCAN_AUTO_OFF_FILE="$OFFF" SECURITY_SCAN_AUTO_STATE_DIR="$STATED" \
+      bash "$AUTO" --off
+    if [ -f "$OFFF" ]; then
+      case_result "auto-pr-check --off creates kill-switch file" 1
+    else
+      case_result "auto-pr-check --off creates kill-switch file" 0 "file missing"
+    fi
+    run env SECURITY_SCAN_AUTO_OFF_FILE="$OFFF" SECURITY_SCAN_AUTO_STATE_DIR="$STATED" \
+      bash "$AUTO" --once
+    if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -qi 'SKIP\|disabled'; then
+      case_result "auto-pr-check --once exits 0 when disabled" 1
+    else
+      # SKIP goes to log file; exit 0 is the contract
+      if [ "$RUN_RC" -eq 0 ]; then
+        case_result "auto-pr-check --once exits 0 when disabled" 1
+      else
+        case_result "auto-pr-check --once exits 0 when disabled" 0 "rc=$RUN_RC $(short "$RUN_OUT")"
+      fi
+    fi
+    run env SECURITY_SCAN_AUTO_OFF_FILE="$OFFF" SECURITY_SCAN_AUTO_STATE_DIR="$STATED" \
+      bash "$AUTO" --on
+    if [ ! -f "$OFFF" ]; then
+      case_result "auto-pr-check --on clears kill-switch (default ON)" 1
+    else
+      case_result "auto-pr-check --on clears kill-switch (default ON)" 0 "file still present"
+    fi
+    run env SECURITY_SCAN_AUTO_PR_CHECK=0 SECURITY_SCAN_AUTO_OFF_FILE="$WORK/no-off" \
+      SECURITY_SCAN_AUTO_STATE_DIR="$STATED" bash "$AUTO" --once
+    if [ "$RUN_RC" -eq 0 ]; then
+      case_result "SECURITY_SCAN_AUTO_PR_CHECK=0 skips tick exit 0" 1
+    else
+      case_result "SECURITY_SCAN_AUTO_PR_CHECK=0 skips tick exit 0" 0 "rc=$RUN_RC"
+    fi
+  fi
+}
+
 echo "=== claude-via-gui.sh present + syntax ==="
 {
   WRAP="$ROOT/security/studio/claude-via-gui.sh"

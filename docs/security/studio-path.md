@@ -66,11 +66,24 @@ Quellen:
 | Codify as rule | Report-Zeile nach `reproduced` |
 | Threat-model first | noch nicht im Studio-Pfad (Phase optional) |
 
+## Auto PR-ready checks
+
+LaunchAgent auf Studio (`bootstrap.sh --install-auto`): periodisch offene **non-draft**
+PRs der konfigurierten Targets scannen. **Default ON** nach Install.
+
+Ausschalten ohne Deinstall:
+
+```bash
+security/studio/auto-pr-check.sh --off    # schreibt ~/.config/security-scan/auto-pr-check.off
+# oder: SECURITY_SCAN_AUTO_PR_CHECK=0
+security/studio/auto-pr-check.sh --on     # wieder an
+```
+
 ## Was absichtlich fehlt
 
-- Kein Self-Hosted GitHub Runner (kann später `check-pr.mjs` aufrufen)
+- Kein Self-Hosted GitHub Runner als GitHub Required Check
 - Keine Branch-Protection von hier setzen (macht der Maintainer manuell)
-- Kein automatischer Webhook — Orchestrierung ist CLI-first
+- Kein GitHub-Webhook — LaunchAgent-Polling statt Events
 
 ## Studio-Stack (Ist)
 
