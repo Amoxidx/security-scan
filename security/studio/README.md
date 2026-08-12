@@ -92,8 +92,20 @@ node security/studio/check-pr.mjs --list-targets
 1. **Local checkout preferred** — if `~/DFXswiss/api` exists, PR mode creates a disposable **git worktree** instead of cloning from GitHub.
 2. **Target host allowlist** — DFX targets ship `api.dfx.swiss` etc. so static does not false-block product URLs (`SECURITY_HOST_ALLOW_EXTRA`).
 3. **Studio env** — PATH/docker/colima/ollama defaults injected for non-interactive shells; `DOCKER_BIN` resolved even when OrbStack is off-PATH.
-4. **Lab only for survivors** — Qwen sandbox runs only on findings that would block, capped by `--max-lab` / `config.lab.maxFindings`.
-5. **Lab model auto-pick** — `config.lab.model` (`ollama:qwen3-coder-next:q4_K_M`) with `preferredModels` fallback if the primary tag is not pulled.
+4. **Coding-agent CLI via GUI keychain** — SSH cannot read the login keychain. `check-pr` sets `SECURITY_CLAUDE_WRAPPER` to `claude-via-gui.sh`, which re-runs the agent in the Aqua `gui/$UID` domain when direct auth is false.
+5. **Lab only for survivors** — Qwen sandbox runs only on findings that would block, capped by `--max-lab` / `config.lab.maxFindings`.
+6. **Lab model auto-pick** — `config.lab.model` (`ollama:qwen3-coder-next:q4_K_M`) with `preferredModels` fallback if the primary tag is not pulled.
+
+## Subscription-agent auth from SSH
+
+```bash
+bash security/studio/claude-via-gui.sh --studio-auth-check
+# ok (direct)  → this shell already sees the keychain
+# ok (GUI)     → desktop session has the seat login; wrapper will use launchctl gui/$UID
+# fail         → log into the Studio GUI and run: claude auth login
+```
+
+`bootstrap.sh` links the wrapper to `~/.local/bin/claude-via-gui` and probes auth the same way.
 
 ## Exit codes
 

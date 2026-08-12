@@ -250,6 +250,33 @@ check_runtime() {
   if have git; then ok "git present"; else fail "git missing"; fi
 }
 
+install_claude_gui_wrapper() {
+  # Symlink security/studio/claude-via-gui.sh → ~/.local/bin so standalone harness runs work.
+  local src="$ROOT/security/studio/claude-via-gui.sh"
+  local dest="$HOME/.local/bin/claude-via-gui"
+  if [ ! -f "$src" ]; then
+    warn "claude-via-gui.sh missing in checkout"
+    return 1
+  fi
+  chmod +x "$src" 2>/dev/null || true
+  if [ "$CHECK_ONLY" = 1 ]; then
+    if [ -x "$src" ]; then
+      ok "claude-via-gui present at $src"
+    else
+      warn "claude-via-gui not executable: $src"
+    fi
+    return 0
+  fi
+  mkdir -p "$HOME/.local/bin"
+  ln -sfn "$src" "$dest"
+  export PATH="$HOME/.local/bin:$PATH"
+  if [ -x "$dest" ] || [ -L "$dest" ]; then
+    ok "linked claude-via-gui → $dest"
+  else
+    warn "could not link claude-via-gui into ~/.local/bin"
+  fi
+}
+
 check_ai() {
   head "AI providers (CLI subscriptions — no metered keys required)"
   if have codex; then
@@ -258,9 +285,22 @@ check_ai() {
     warn "codex not on PATH — triage/judge stages skip (npm i -g @openai/codex && codex login)"
   fi
   if have claude; then
-    ok "claude (adversarial refuter)"
+    ok "claude binary on PATH: $(command -v claude)"
   else
     warn "claude not on PATH — verify stage may be unverified"
+  fi
+  install_claude_gui_wrapper || true
+  # Prefer the in-repo wrapper (absolute) for auth probe — same path check-pr exports.
+  local wrap="$ROOT/security/studio/claude-via-gui.sh"
+  if [ -x "$wrap" ]; then
+    local auth_out
+    if auth_out="$("$wrap" --studio-auth-check 2>&1)"; then
+      ok "coding-agent CLI subscription reachable ($(printf '%s' "$auth_out" | tr '\n' ' ' | cut -c1-100))"
+    else
+      warn "coding-agent CLI auth not reachable from this shell — on the Studio desktop run: claude auth login"
+      warn "  (SSH cannot read the login keychain; claude-via-gui uses the Aqua GUI domain when a desktop session exists)"
+      warn "  detail: $(printf '%s' "$auth_out" | tr '\n' ' ' | cut -c1-160)"
+    fi
   fi
   if have kimi; then
     ok "kimi present"
