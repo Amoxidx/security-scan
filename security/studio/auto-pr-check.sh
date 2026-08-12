@@ -41,34 +41,27 @@ die() { log "ERROR: $*"; exit 3; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
 cfg_get() {
-  # cfg_get <jq-path> [default]
-  local path="$1" def="${2:-}"
+  # cfg_get <dot.path> [default]  — uses jq (no embedded print(); TF-safe)
+  local path="$1" def="${2:-}" val
   if [ ! -f "$CFG_FILE" ]; then
     printf '%s' "$def"
     return
   fi
-  python3 - "$CFG_FILE" "$path" "$def" <<'PY'
-import json, sys
-cfg_path, path, default = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    with open(cfg_path) as f:
-        d = json.load(f)
-except Exception:
-    print(default)
-    raise SystemExit
-cur = d
-for part in path.split("."):
-    if not isinstance(cur, dict) or part not in cur:
-        print(default)
-        raise SystemExit
-    cur = cur[part]
-if isinstance(cur, bool):
-    print("true" if cur else "false")
-elif isinstance(cur, list):
-    print("\n".join(str(x) for x in cur))
-else:
-    print(cur if cur is not None else default)
-PY
+  # shellcheck disable=SC2016
+  val="$(jq -r --arg p "$path" --arg d "$def" '
+    ($p | split(".")) as $parts
+    | getpath($parts) as $v
+    | if $v == null then $d
+      elif ($v|type) == "boolean" then (if $v then "true" else "false" end)
+      elif ($v|type) == "array" then ($v | map(tostring) | join("\n"))
+      else ($v|tostring)
+      end
+  ' "$CFG_FILE" 2>/dev/null || true)"
+  if [ -z "$val" ] || [ "$val" = "null" ]; then
+    printf '%s' "$def"
+  else
+    printf '%s' "$val"
+  fi
 }
 
 is_disabled() {
@@ -119,7 +112,7 @@ cmd_status() {
   echo "  targets:"
   cfg_get targets | sed 's/^/    - /'
   if [ -f "$STATE_FILE" ]; then
-    echo "  last_state_keys: $(python3 -c "import json;d=json.load(open('$STATE_FILE'));print(len(d.get('checked',{})))" 2>/dev/null || echo 0)"
+    echo "  last_state_keys: $(jq -r '(.checked // {}) | length' "$STATE_FILE" 2>/dev/null || echo 0)"
   fi
   if is_disabled; then
     echo "  effective:        SKIP (disabled)"
@@ -201,91 +194,49 @@ cmd_uninstall_agent() {
   echo "Uninstalled LaunchAgent $label"
 }
 
-load_state() {
-  if [ -f "$STATE_FILE" ]; then
-    cat "$STATE_FILE"
-  else
-    echo '{"checked":{}}'
-  fi
-}
-
 save_checked() {
-  local key="$1" head="$2" exit_code="$3" when
+  local key="$1" head="$2" exit_code="$3" when tmp
   when="$(date -Iseconds 2>/dev/null || date)"
-  python3 - "$STATE_FILE" "$key" "$head" "$exit_code" "$when" <<'PY'
-import json, sys, os
-path, key, head, exit_code, when = sys.argv[1:6]
-try:
-    with open(path) as f:
-        d = json.load(f)
-except Exception:
-    d = {"checked": {}}
-d.setdefault("checked", {})[key] = {
-    "headRefOid": head,
-    "exitCode": int(exit_code),
-    "at": when,
-}
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, "w") as f:
-    json.dump(d, f, indent=2)
-    f.write("\n")
-PY
+  mkdir -p "$(dirname "$STATE_FILE")"
+  if [ ! -f "$STATE_FILE" ]; then
+    printf '%s\n' '{"checked":{}}' >"$STATE_FILE"
+  fi
+  tmp="$(mktemp "${STATE_DIR}/state.XXXXXX")"
+  jq --arg k "$key" --arg h "$head" --argjson e "$exit_code" --arg t "$when" '
+    .checked = (.checked // {})
+    | .checked[$k] = {headRefOid: $h, exitCode: $e, at: $t}
+  ' "$STATE_FILE" >"$tmp" 2>/dev/null && mv "$tmp" "$STATE_FILE" || rm -f "$tmp"
 }
 
 already_checked() {
-  local key="$1" head="$2"
-  python3 - "$STATE_FILE" "$key" "$head" <<'PY'
-import json, sys
-path, key, head = sys.argv[1:4]
-try:
-    with open(path) as f:
-        d = json.load(f)
-except Exception:
-    raise SystemExit(1)
-entry = d.get("checked", {}).get(key) or {}
-raise SystemExit(0 if entry.get("headRefOid") == head else 1)
-PY
+  local key="$1" head="$2" prev
+  [ -f "$STATE_FILE" ] || return 1
+  prev="$(jq -r --arg k "$key" '.checked[$k].headRefOid // empty' "$STATE_FILE" 2>/dev/null || true)"
+  [ -n "$prev" ] && [ "$prev" = "$head" ]
 }
 
 list_ready_prs() {
-  local repo="$1"
-  local include
+  local repo="$1" include
   include="$(cfg_get includeDrafts false)"
   # Open PRs only; filter drafts unless includeDrafts=true.
-  INCLUDE_DRAFTS="$include" gh pr list --repo "$repo" --state open --limit 40 \
+  gh pr list --repo "$repo" --state open --limit 40 \
     --json number,title,isDraft,headRefOid,url,updatedAt 2>/dev/null \
-    | INCLUDE_DRAFTS="$include" python3 -c '
-import json, os, sys
-include = os.environ.get("INCLUDE_DRAFTS", "false") == "true"
-raw = sys.stdin.read()
-try:
-    prs = json.loads(raw) if raw.strip() else []
-except Exception:
-    prs = []
-for p in prs:
-    if p.get("isDraft") and not include:
-        continue
-    title = (p.get("title") or "").replace("\t", " ")
-    print("%s\t%s\t%s\t%s" % (
-        p.get("number", ""),
-        p.get("headRefOid", ""),
-        p.get("url", ""),
-        title,
-    ))
-'
+    | jq -r --arg inc "$include" '
+      .[]
+      | select(($inc == "true") or (.isDraft | not))
+      | [
+          (.number|tostring),
+          .headRefOid,
+          (.url // ""),
+          ((.title // "") | gsub("\t"; " "))
+        ]
+      | @tsv
+    ' 2>/dev/null || true
 }
 
 repo_for_target() {
   local tid="$1"
-  python3 - "$TARGETS_FILE" "$tid" <<'PY'
-import json, sys
-path, tid = sys.argv[1:3]
-with open(path) as f:
-    d = json.load(f)
-t = (d.get("targets") or {}).get(tid) or {}
-repo = t.get("repo")
-print(repo or "")
-PY
+  jq -r --arg t "$tid" '.targets[$t].repo // empty' "$TARGETS_FILE" 2>/dev/null || true
 }
 
 run_one_pr() {
@@ -325,7 +276,7 @@ run_one_pr() {
 cmd_run() {
   need gh
   need node
-  need python3
+  need jq
 
   if is_disabled; then
     log "SKIP tick — auto-pr-check disabled (kill switch or SECURITY_SCAN_AUTO_PR_CHECK=0)"
