@@ -91,8 +91,9 @@ node security/studio/check-pr.mjs --list-targets
 
 1. **Local checkout preferred** — if `~/DFXswiss/api` exists, PR mode creates a disposable **git worktree** instead of cloning from GitHub.
 2. **Target host allowlist** — DFX targets ship `api.dfx.swiss` etc. so static does not false-block product URLs (`SECURITY_HOST_ALLOW_EXTRA`).
-3. **Studio env** — PATH/docker/colima/ollama defaults injected for non-interactive shells.
-4. **Lab only for survivors** — Qwen sandbox runs only on findings that would block, capped by `--max-lab`.
+3. **Studio env** — PATH/docker/colima/ollama defaults injected for non-interactive shells; `DOCKER_BIN` resolved even when OrbStack is off-PATH.
+4. **Lab only for survivors** — Qwen sandbox runs only on findings that would block, capped by `--max-lab` / `config.lab.maxFindings`.
+5. **Lab model auto-pick** — `config.lab.model` (`ollama:qwen3-coder-next:q4_K_M`) with `preferredModels` fallback if the primary tag is not pulled.
 
 ## Exit codes
 

@@ -65,8 +65,43 @@ Quellen:
 - Keine Branch-Protection von hier setzen (macht der Maintainer manuell)
 - Kein automatischer Webhook — Orchestrierung ist CLI-first
 
+## Studio-Stack (Ist)
+
+| Komponente | Rolle | Default |
+|---|---|---|
+| Codex CLI | Triage + Final Judge | `codex-cli:gpt-5.6-sol` |
+| Claude CLI | Adversarial Refuter | `claude-cli:claude-opus-5` |
+| Ollama Qwen | Machine Evidence (Lab) | `ollama:qwen3-coder-next:q4_K_M` |
+| Colima + Docker | Sandbox (`--network none`) | `node:22-bookworm-slim` |
+
+Konfiguration: `security/redteam/config.json` → `lab.model` / `lab.preferredModels`.
+`check-pr.mjs` wählt bei fehlendem Primary-Tag das erste verfügbare Preferred-Modell
+auf Ollama (Fallback: jede `qwen3-coder-next*`-Variante).
+
+Bootstrap setzt `DOCKER_BIN` und PATH für non-interactive Shells (OrbStack unter
+`/usr/local/bin/docker`, brew Cellar, `~/.local/bin`).
+
 ## Messung
 
-Bootstrap + `studio.test.sh` + Lab-Smoke gegen
-`security/eval/corpus/vuln/006-proto-pollution` auf Studio (2026-08-12):
-Verdict `reproduced`, Exit 0, 2 Turns.
+Bootstrap + `studio.test.sh` + Lab-Smoke auf Studio:
+
+| Datum | Was | Ergebnis |
+|---|---|---|
+| 2026-08-12 | Lab gegen `006-proto-pollution/**after**` (Vuln-Tree) mit `qwen3-coder-next:q4_K_M` | `reproduced`, Exit 0, 2 Turns, ~5 s |
+| 2026-08-12 | `studio.test.sh` | 11/11 |
+| 2026-08-12 | `bootstrap.sh --check` | ok=16 warn=1 fail=0 (kimi optional) |
+
+Korpus-Konvention: `before/` = clean base, `after/` = PR der die Schwachstelle
+**einführt**. Probes und Lab-Smokes laufen gegen `after/`.
+
+```bash
+bash security/studio/bootstrap.sh --check
+bash security/studio/studio.test.sh
+node security/lab/run.mjs \
+  --finding security/lab/fixtures/finding-proto-pollution.json \
+  --code-dir security/eval/corpus/vuln/006-proto-pollution/after
+# Gate (deterministisch, ohne AI):
+node security/studio/check-pr.mjs --local --target security-scan --skip-ai
+# Voller Studio-Pfad inkl. Qwen-Lab:
+node security/studio/check-pr.mjs --target dfx-api --pr <N> --post
+```

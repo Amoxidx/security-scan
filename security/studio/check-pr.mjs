@@ -42,6 +42,8 @@ import {
   EMPTY_TREE,
   expandPath,
 } from './targets.mjs';
+import { resolveDockerBin } from '../lab/sandbox.mjs';
+import { resolveLabModelSpec } from './lab-model.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../..');
@@ -111,8 +113,10 @@ Options:
   --base <ref>          Diff base (default from target)
   --host-allow-extra    Extra host regex for static gate (repeatable)
   --out <dir>           Report directory
-  --lab-model <spec>    Default ollama:qwen3-coder-next:q4_K_M
-  --max-lab <n>         Cap lab findings (default: 5)
+  --lab-model <spec>    Default from config.lab.model (ollama:qwen3-coder-next:q4_K_M)
+  --max-lab <n>         Cap lab findings (default: config.lab.maxFindings or 5)
+  --lab-timeout-s <n>   Per-finding lab wall clock (default: config.lab.timeoutS or 300)
+  --lab-max-turns <n>   Lab iteration cap (default: config.lab.maxTurns or 6)
   --skip-ai / --no-lab / --skip-scanners / --skip-static
   --post                Upsert PR comment (pr mode only)
   --keep-workdir        Keep cache worktrees/clones`);
@@ -222,20 +226,28 @@ function readJson(path, fallback = null) {
 function stageEnv(base = process.env) {
   const env = { ...base };
   if (hostExtra) env.SECURITY_HOST_ALLOW_EXTRA = hostExtra;
-  // Lab / docker resolution on Studio non-interactive shells
-  if (!env.PATH?.includes('/opt/homebrew/opt/docker/bin')) {
-    env.PATH = [
-      `${homedir()}/.local/bin`,
-      '/opt/homebrew/opt/docker/bin',
-      '/opt/homebrew/bin',
-      `${homedir()}/go/bin`,
-      env.PATH || '',
-    ].join(':');
-  }
+  // Lab / docker resolution on Studio non-interactive shells (OrbStack + brew + go).
+  env.PATH = [
+    `${homedir()}/.local/bin`,
+    '/usr/local/bin',
+    '/opt/homebrew/opt/docker/bin',
+    '/opt/homebrew/bin',
+    `${homedir()}/go/bin`,
+    env.PATH || '',
+  ].join(':');
   if (!env.OLLAMA_API_KEY) env.OLLAMA_API_KEY = 'ollama';
   const colimaSock = `${homedir()}/.colima/default/docker.sock`;
-  if (existsSync(colimaSock) && !env.DOCKER_HOST) {
+  if (existsSync(colimaSock)) {
+    // Prefer colima when its socket exists — host DOCKER_HOST is often stale.
     env.DOCKER_HOST = `unix://${colimaSock}`;
+  }
+  // Resolve docker once so sandbox children never depend on PATH alone.
+  if (!env.DOCKER_BIN || !existsSync(env.DOCKER_BIN)) {
+    try {
+      env.DOCKER_BIN = resolveDockerBin();
+    } catch {
+      /* resolveDockerBin always returns a string; ignore */
+    }
   }
   return env;
 }
@@ -564,18 +576,26 @@ function stageHarness(subject, outDir, diffPath) {
   };
 }
 
-function stageLab(subject, outDir, candidates, diffPath) {
-  log('lab', `${candidates.length} candidate(s) -> Ollama sandbox`);
+function stageLab(subject, outDir, candidates, diffPath, config) {
   if (!candidates.length) {
-    return { name: 'lab', exit: 0, results: [], blocked: false };
+    log('lab', '0 candidate(s) -> Ollama sandbox');
+    return { name: 'lab', exit: 0, results: [], blocked: false, model: null };
   }
 
   const labRoot = join(outDir, 'lab');
   mkdirSync(labRoot, { recursive: true });
-  const model = args['lab-model'] || 'ollama:qwen3-coder-next:q4_K_M';
-  const maxLab = Math.max(1, Number(args['max-lab'] || 5));
+  const labCfg = config?.lab || {};
+  const model = resolveLabModelSpec(config, args['lab-model'] || null);
+  const maxLab = Math.max(1, Number(args['max-lab'] || labCfg.maxFindings || 5));
+  const timeoutS = Number(args['lab-timeout-s'] || labCfg.timeoutS || 300);
+  const maxTurns = Number(args['lab-max-turns'] || labCfg.maxTurns || 6);
   const slice = candidates.slice(0, maxLab);
   const results = [];
+
+  log(
+    'lab',
+    `${candidates.length} candidate(s) -> Ollama sandbox · model=${model} maxLab=${maxLab} timeoutS=${timeoutS} maxTurns=${maxTurns}`,
+  );
 
   const codeDir = join(outDir, 'lab-code');
   if (existsSync(codeDir)) rmSync(codeDir, { recursive: true, force: true });
@@ -597,8 +617,8 @@ function stageLab(subject, outDir, candidates, diffPath) {
       '--out', runOut,
       '--model', model,
       '--config', CONFIG,
-      '--timeout-s', String(args['lab-timeout-s'] || 300),
-      '--max-turns', String(args['lab-max-turns'] || 6),
+      '--timeout-s', String(timeoutS),
+      '--max-turns', String(maxTurns),
     ];
     if (diffPath && existsSync(diffPath) && subject.mode !== 'tree') {
       // Full-tree diffs are huge; lab only needs finding + staged code in tree mode.
@@ -608,13 +628,13 @@ function stageLab(subject, outDir, candidates, diffPath) {
     const r = run('node', labArgs, {
       cwd: subject.workdir,
       env: stageEnv(),
-      timeoutMs: 400_000,
+      timeoutMs: Math.max(400_000, (timeoutS + 60) * 1000),
     });
     writeFileSync(join(runOut, 'lab-runner.log'), `${r.stdout}\n${r.stderr}`);
     const report = readJson(join(runOut, 'report.json'), null);
     const verdict = report?.verdict || (r.status === 3 ? 'setup-error' : 'inconclusive');
     console.log(`    -> ${verdict} (exit ${r.status})`);
-    results.push({ finding: f, verdict, report, exit: r.status, out: runOut });
+    results.push({ finding: f, verdict, report, exit: r.status, out: runOut, model });
   }
 
   const reproduced = results.filter((r) => r.verdict === 'reproduced');
@@ -626,6 +646,7 @@ function stageLab(subject, outDir, candidates, diffPath) {
     reproduced,
     inconclusive,
     blocked: reproduced.length > 0,
+    model,
   };
 }
 
@@ -958,7 +979,7 @@ async function main() {
           ['critical', 'high', 'error'].includes(f.severity));
 
       if (!args['no-lab'] && forLab.length) {
-        stages.lab = stageLab(subject, outDir, forLab, diffPath);
+        stages.lab = stageLab(subject, outDir, forLab, diffPath, config);
       } else if (args['no-lab']) {
         console.log('\n> lab  skipped (--no-lab)');
       } else {
