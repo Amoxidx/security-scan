@@ -111,6 +111,8 @@ cmd_status() {
   echo "  state:            $STATE_FILE"
   echo "  targets:"
   cfg_get targets | sed 's/^/    - /'
+  echo "  orgs:"
+  jq -r '(.orgs // [])[] | "    - \(.org) (exclude: \((.exclude // [])|join(", ")))"' "$CFG_FILE" 2>/dev/null || echo "    - (none)"
   if [ -f "$STATE_FILE" ]; then
     echo "  last_state_keys: $(jq -r '(.checked // {}) | length' "$STATE_FILE" 2>/dev/null || echo 0)"
   fi
@@ -239,12 +241,29 @@ repo_for_target() {
   jq -r --arg t "$tid" '.targets[$t].repo // empty' "$TARGETS_FILE" 2>/dev/null || true
 }
 
+# run_one_pr <label> <repo> <pr> <head> [hostAllowPipeSeparated]
 run_one_pr() {
-  local target="$1" pr="$2" head="$3"
-  local out args=()
-  out="$STATE_DIR/runs/${target}-pr${pr}-${head:0:8}"
+  local label="$1" repo="$2" pr="$3" head="$4" hosts="${5:-}"
+  local out args=() slug
+  slug="$(printf '%s' "$repo" | tr '/' '-')"
+  out="$STATE_DIR/runs/${slug}-pr${pr}-${head:0:8}"
   mkdir -p "$out"
-  args=(node "$CHECK_PR" --target "$target" --pr "$pr" --out "$out")
+  args=(node "$CHECK_PR" --repo "$repo" --pr "$pr" --out "$out")
+  # Prefer named target when the repo is registered (localPaths + defaults).
+  local tid
+  tid="$(jq -r --arg r "$repo" '
+    .targets | to_entries[] | select(.value.repo == $r) | .key
+  ' "$TARGETS_FILE" 2>/dev/null | head -1 || true)"
+  if [ -n "$tid" ]; then
+    args=(node "$CHECK_PR" --target "$tid" --repo "$repo" --pr "$pr" --out "$out")
+  fi
+  if [ -n "$hosts" ]; then
+    local h
+    IFS='|' read -r -a _host_parts <<<"$hosts"
+    for h in "${_host_parts[@]}"; do
+      [ -n "$h" ] && args+=(--host-allow-extra "$h")
+    done
+  fi
   if [ "$(cfg_get skipAi false)" = "true" ]; then
     args+=(--skip-ai)
   fi
@@ -254,7 +273,7 @@ run_one_pr() {
   if [ "$(cfg_get postComment false)" = "true" ]; then
     args+=(--post)
   fi
-  log "RUN target=$target pr=$pr head=${head:0:8} out=$out"
+  log "RUN label=$label repo=$repo pr=$pr head=${head:0:8} out=$out"
   set +e
   (
     export PATH="${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-}"
@@ -268,9 +287,50 @@ run_one_pr() {
   ) >>"$out/auto-runner.log" 2>&1
   local rc=$?
   set -u
-  log "DONE target=$target pr=$pr exit=$rc"
+  log "DONE repo=$repo pr=$pr exit=$rc"
   echo "$rc" >"$out/exit.code"
   return "$rc"
+}
+
+# List non-archived, non-fork repos for an org (name only, not full path).
+list_org_repo_names() {
+  local org="$1"
+  gh repo list "$org" --limit 100 --json name,isArchived,isFork 2>/dev/null \
+    | jq -r '.[] | select((.isArchived|not) and (.isFork|not)) | .name' 2>/dev/null || true
+}
+
+org_host_allow() {
+  local org="$1"
+  jq -r --arg o "$org" '
+    (.orgs // [])[] | select(.org == $o) | (.hostAllowExtra // []) | join("|")
+  ' "$CFG_FILE" 2>/dev/null || true
+}
+
+org_exclude_contains() {
+  local org="$1" name="$2"
+  jq -e --arg o "$org" --arg n "$name" '
+    (.orgs // [])[] | select(.org == $o) | (.exclude // []) | index($n) != null
+  ' "$CFG_FILE" >/dev/null 2>&1
+}
+
+# Process ready PRs for one repo; updates ran counter via nameref-like globals.
+# process_repo_prs <label> <repo> <hosts>  — uses max_n/ran from cmd_run scope
+process_repo_prs() {
+  local label="$1" repo="$2" hosts="$3"
+  local pr head url title key rc
+  while IFS=$'\t' read -r pr head url title; do
+    [ -n "$pr" ] || continue
+    [ "$ran" -ge "$max_n" ] && return 0
+    key="${repo}#${pr}"
+    if already_checked "$key" "$head"; then
+      log "skip $key head=${head:0:8} (already checked)"
+      continue
+    fi
+    run_one_pr "$label" "$repo" "$pr" "$head" "$hosts"
+    rc=$?
+    save_checked "$key" "$head" "$rc"
+    ran=$((ran + 1))
+  done < <(list_ready_prs "$repo")
 }
 
 cmd_run() {
@@ -292,20 +352,24 @@ cmd_run() {
 
   local max_n ran=0
   max_n="$(cfg_get maxPrsPerTick 2)"
-  # shellcheck disable=SC2207
   local targets=()
   while IFS= read -r t; do
     [ -n "$t" ] && targets+=("$t")
   done < <(cfg_get targets)
 
-  if [ "${#targets[@]}" -eq 0 ]; then
-    log "no targets configured"
-    exit 0
-  fi
+  local seen_repos=""
+  mark_seen() {
+    local r="$1"
+    seen_repos="${seen_repos}"$'\n'"${r}"
+  }
+  was_seen() {
+    printf '%s\n' "$seen_repos" | grep -qxF "$1"
+  }
 
-  log "TICK start targets=${targets[*]} max=$max_n"
+  log "TICK start named_targets=${#targets[@]} max=$max_n"
 
-  local tid repo line pr head url title key rc
+  local tid repo hosts
+  # 1) Named targets first (prefer localPaths via --target).
   for tid in "${targets[@]}"; do
     [ "$ran" -ge "$max_n" ] && break
     repo="$(repo_for_target "$tid")"
@@ -313,20 +377,36 @@ cmd_run() {
       log "skip target=$tid (no repo)"
       continue
     fi
-    while IFS=$'\t' read -r pr head url title; do
-      [ -n "$pr" ] || continue
+    if was_seen "$repo"; then
+      continue
+    fi
+    mark_seen "$repo"
+    hosts="$(jq -r --arg t "$tid" '(.targets[$t].hostAllowExtra // []) | join("|")' "$TARGETS_FILE" 2>/dev/null || true)"
+    process_repo_prs "$tid" "$repo" "$hosts"
+  done
+
+  # 2) Org discovery: DFXswiss, RealUnitCH, zk-coins, …
+  local org name full
+  while IFS= read -r org; do
+    [ -n "$org" ] || continue
+    [ "$ran" -ge "$max_n" ] && break
+    hosts="$(org_host_allow "$org")"
+    log "ORG scan org=$org"
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
       [ "$ran" -ge "$max_n" ] && break
-      key="${repo}#${pr}"
-      if already_checked "$key" "$head"; then
-        log "skip $key head=${head:0:8} (already checked)"
+      if org_exclude_contains "$org" "$name"; then
+        log "skip $org/$name (excluded)"
         continue
       fi
-      run_one_pr "$tid" "$pr" "$head"
-      rc=$?
-      save_checked "$key" "$head" "$rc"
-      ran=$((ran + 1))
-    done < <(list_ready_prs "$repo")
-  done
+      full="${org}/${name}"
+      if was_seen "$full"; then
+        continue
+      fi
+      mark_seen "$full"
+      process_repo_prs "$full" "$full" "$hosts"
+    done < <(list_org_repo_names "$org")
+  done < <(jq -r '(.orgs // [])[].org' "$CFG_FILE" 2>/dev/null || true)
 
   log "TICK end ran=$ran"
   exit 0

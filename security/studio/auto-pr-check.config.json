@@ -1,11 +1,60 @@
 {
-  "$comment": "Studio auto-check for open, non-draft (ready-for-review) PRs. Kill switch: ~/.config/security-scan/auto-pr-check.off or SECURITY_SCAN_AUTO_PR_CHECK=0. Default when the LaunchAgent is installed: ON.",
-  "targets": ["dfx-api", "dfx-services", "security-scan"],
+  "$comment": "Studio auto-check for open non-draft PRs. Kill switch: ~/.config/security-scan/auto-pr-check.off or SECURITY_SCAN_AUTO_PR_CHECK=0. Default ON when LaunchAgent installed. Named targets run first; orgs discover remaining repos (non-archived, non-fork).",
+  "targets": [
+    "dfx-api",
+    "dfx-services",
+    "dfx-wallet",
+    "btc-wallet",
+    "landing-page",
+    "packages",
+    "payment",
+    "lightning",
+    "bitbox-flutter",
+    "bitbox-testkit",
+    "realunit-app",
+    "realunit-web",
+    "zkcoins-app",
+    "zkcoins-api",
+    "zkcoins-landing",
+    "zkcoins-sdk",
+    "zkcoins-node",
+    "security-scan"
+  ],
+  "orgs": [
+    {
+      "org": "DFXswiss",
+      "defaultBase": "develop",
+      "hostAllowExtra": [
+        "api\\.dfx\\.swiss",
+        "dev\\.dfx\\.swiss",
+        "app\\.dfx\\.swiss",
+        "services\\.dfx\\.swiss",
+        "content\\.dfx\\.swiss"
+      ],
+      "exclude": []
+    },
+    {
+      "org": "RealUnitCH",
+      "defaultBase": "develop",
+      "hostAllowExtra": [
+        "api\\.dfx\\.swiss",
+        "app\\.realunit\\.ch",
+        "realunit\\.ch"
+      ],
+      "exclude": ["fastlane-certificates"]
+    },
+    {
+      "org": "zk-coins",
+      "defaultBase": "develop",
+      "hostAllowExtra": [],
+      "exclude": []
+    }
+  ],
   "includeDrafts": false,
   "postComment": false,
   "skipAi": false,
   "noLab": false,
-  "maxPrsPerTick": 2,
+  "maxPrsPerTick": 4,
   "intervalSeconds": 1800,
   "label": "com.amoxidx.security-scan-auto-pr"
 }

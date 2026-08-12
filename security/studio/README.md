@@ -139,8 +139,9 @@ bash security/studio/studio.test.sh
 
 ## Auto PR-ready checks (LaunchAgent)
 
-Watches **open, non-draft** PRs for configured targets (`dfx-api`, `dfx-services`,
-`security-scan` by default) and runs `check-pr.mjs` once per head SHA.
+Watches **open, non-draft** PRs for named targets **and whole orgs**
+(`DFXswiss`, `RealUnitCH`, `zk-coins` by default) and runs `check-pr.mjs` once per
+head SHA (up to `maxPrsPerTick` per interval).
 
 ```bash
 # Install (default ON)
