@@ -1,5 +1,5 @@
 {
-  "$comment": "Named targets for Studio checks. Primary use case is PR review on Studio; any target can also run in mode=tree against a local tree for testing other codebases. Paths are tried in order; first existing .git wins. ~ expands to $HOME.",
+  "$comment": "Named targets for Studio checks. Paths tried in order; first existing .git wins. ~ expands to $HOME. Orgs for auto-pr-check are also listed in auto-pr-check.config.json.",
   "defaultTarget": "security-scan",
   "targets": {
     "security-scan": {
@@ -19,34 +19,157 @@
       "label": "DFX API",
       "repo": "DFXswiss/api",
       "defaultBase": "develop",
-      "localPaths": [
-        "~/DFXswiss/api",
-        "/Users/joshua/DFXswiss/api",
-        "/Users/joshuaai/DFXswiss/api"
-      ],
+      "localPaths": ["~/DFXswiss/api", "/Users/joshua/DFXswiss/api"],
       "hostAllowExtra": [
         "api\\.dfx\\.swiss",
         "dev\\.dfx\\.swiss",
         "app\\.dfx\\.swiss",
-        "services\\.dfx\\.swiss"
-      ],
-      "notes": "Primary product surface. Prefer local checkout over clone."
+        "services\\.dfx\\.swiss",
+        "content\\.dfx\\.swiss"
+      ]
     },
     "dfx-services": {
       "label": "DFX services",
       "repo": "DFXswiss/services",
       "defaultBase": "develop",
-      "localPaths": [
-        "~/DFXswiss/services",
-        "/Users/joshua/DFXswiss/services",
-        "/Users/joshuaai/DFXswiss/services"
-      ],
+      "localPaths": ["~/DFXswiss/services", "/Users/joshua/DFXswiss/services"],
       "hostAllowExtra": [
         "api\\.dfx\\.swiss",
         "dev\\.dfx\\.swiss",
         "app\\.dfx\\.swiss",
+        "services\\.dfx\\.swiss",
+        "content\\.dfx\\.swiss"
+      ]
+    },
+    "dfx-wallet": {
+      "label": "DFX wallet",
+      "repo": "DFXswiss/dfx-wallet",
+      "defaultBase": "develop",
+      "localPaths": ["~/DFXswiss/dfx-wallet", "/Users/joshua/DFXswiss/dfx-wallet"],
+      "hostAllowExtra": [
+        "api\\.dfx\\.swiss",
+        "app\\.dfx\\.swiss",
         "services\\.dfx\\.swiss"
       ]
+    },
+    "btc-wallet": {
+      "label": "DFX btc-wallet",
+      "repo": "DFXswiss/btc-wallet",
+      "defaultBase": "develop",
+      "localPaths": ["~/DFXswiss/btc-wallet", "/Users/joshua/DFXswiss/btc-wallet"],
+      "hostAllowExtra": [
+        "api\\.dfx\\.swiss",
+        "app\\.dfx\\.swiss",
+        "services\\.dfx\\.swiss"
+      ]
+    },
+    "landing-page": {
+      "label": "DFX landing-page",
+      "repo": "DFXswiss/landing-page",
+      "defaultBase": "develop",
+      "localPaths": ["~/DFXswiss/landing-page", "/Users/joshua/DFXswiss/landing-page"],
+      "hostAllowExtra": [
+        "api\\.dfx\\.swiss",
+        "app\\.dfx\\.swiss",
+        "content\\.dfx\\.swiss"
+      ]
+    },
+    "packages": {
+      "label": "DFX packages",
+      "repo": "DFXswiss/packages",
+      "defaultBase": "develop",
+      "localPaths": ["~/DFXswiss/packages", "/Users/joshua/DFXswiss/packages"],
+      "hostAllowExtra": ["api\\.dfx\\.swiss"]
+    },
+    "payment": {
+      "label": "DFX payment",
+      "repo": "DFXswiss/payment",
+      "defaultBase": "develop",
+      "localPaths": ["~/DFXswiss/payment", "/Users/joshua/DFXswiss/payment"],
+      "hostAllowExtra": ["api\\.dfx\\.swiss", "app\\.dfx\\.swiss"]
+    },
+    "lightning": {
+      "label": "DFX lightning",
+      "repo": "DFXswiss/lightning",
+      "defaultBase": "develop",
+      "localPaths": ["~/DFXswiss/lightning", "/Users/joshua/DFXswiss/lightning"],
+      "hostAllowExtra": ["api\\.dfx\\.swiss"]
+    },
+    "bitbox-flutter": {
+      "label": "DFX bitbox_flutter",
+      "repo": "DFXswiss/bitbox_flutter",
+      "defaultBase": "develop",
+      "localPaths": ["~/DFXswiss/bitbox_flutter", "/Users/joshua/DFXswiss/bitbox_flutter"],
+      "hostAllowExtra": ["api\\.dfx\\.swiss"]
+    },
+    "bitbox-testkit": {
+      "label": "DFX bitbox-testkit",
+      "repo": "DFXswiss/bitbox-testkit",
+      "defaultBase": "develop",
+      "localPaths": ["~/DFXswiss/bitbox-testkit", "/Users/joshua/DFXswiss/bitbox-testkit"],
+      "hostAllowExtra": []
+    },
+    "realunit-app": {
+      "label": "RealUnit app",
+      "repo": "RealUnitCH/app",
+      "defaultBase": "develop",
+      "localPaths": [
+        "~/RealUnitCH/app",
+        "~/DFXswiss/realunit-app",
+        "/Users/joshua/RealUnitCH/app",
+        "/Users/joshua/DFXswiss/realunit-app"
+      ],
+      "hostAllowExtra": [
+        "api\\.dfx\\.swiss",
+        "app\\.realunit\\.ch",
+        "realunit\\.ch"
+      ]
+    },
+    "realunit-web": {
+      "label": "RealUnit web",
+      "repo": "RealUnitCH/web",
+      "defaultBase": "develop",
+      "localPaths": ["~/RealUnitCH/web", "/Users/joshua/RealUnitCH/web"],
+      "hostAllowExtra": [
+        "api\\.dfx\\.swiss",
+        "app\\.realunit\\.ch",
+        "realunit\\.ch"
+      ]
+    },
+    "zkcoins-app": {
+      "label": "zk-coins app",
+      "repo": "zk-coins/app",
+      "defaultBase": "develop",
+      "localPaths": ["~/zk-coins/app", "/Users/joshua/zk-coins/app"],
+      "hostAllowExtra": []
+    },
+    "zkcoins-api": {
+      "label": "zk-coins api",
+      "repo": "zk-coins/api",
+      "defaultBase": "develop",
+      "localPaths": ["~/zk-coins/api", "/Users/joshua/zk-coins/api"],
+      "hostAllowExtra": []
+    },
+    "zkcoins-landing": {
+      "label": "zk-coins landing-page",
+      "repo": "zk-coins/landing-page",
+      "defaultBase": "develop",
+      "localPaths": ["~/zk-coins/landing-page", "/Users/joshua/zk-coins/landing-page"],
+      "hostAllowExtra": []
+    },
+    "zkcoins-sdk": {
+      "label": "zk-coins sdk",
+      "repo": "zk-coins/sdk",
+      "defaultBase": "develop",
+      "localPaths": ["~/zk-coins/sdk", "/Users/joshua/zk-coins/sdk"],
+      "hostAllowExtra": []
+    },
+    "zkcoins-node": {
+      "label": "zk-coins node",
+      "repo": "zk-coins/node",
+      "defaultBase": "develop",
+      "localPaths": ["~/zk-coins/node", "/Users/joshua/zk-coins/node"],
+      "hostAllowExtra": []
     },
     "herbert-hq": {
       "label": "Herbert HQ",

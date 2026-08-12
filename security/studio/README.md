@@ -137,8 +137,37 @@ bash security/studio/bootstrap.sh --check
 bash security/studio/studio.test.sh
 ```
 
+## Auto PR-ready checks (LaunchAgent)
+
+Watches **open, non-draft** PRs for named targets **and whole orgs**
+(`DFXswiss`, `RealUnitCH`, `zk-coins` by default) and runs `check-pr.mjs` once per
+head SHA (up to `maxPrsPerTick` per interval).
+
+```bash
+# Install (default ON)
+bash security/studio/bootstrap.sh --install-auto
+# or: npm run studio:auto:install
+
+# Pause without uninstalling (kill switch)
+security/studio/auto-pr-check.sh --off
+# Resume (default)
+security/studio/auto-pr-check.sh --on
+
+# One manual tick
+security/studio/auto-pr-check.sh --once
+security/studio/auto-pr-check.sh --status
+```
+
+| Kill switch | Effect |
+|---|---|
+| `~/.config/security-scan/auto-pr-check.off` exists | **OFF** |
+| `SECURITY_SCAN_AUTO_PR_CHECK=0` | **OFF** |
+| neither (and agent loaded) | **ON** (default) |
+
+Config: `security/studio/auto-pr-check.config.json` (`targets`, `postComment`, `maxPrsPerTick`,
+`intervalSeconds`, `skipAi`). State/logs under `~/.cache/security-scan/auto-pr-check/`.
+
 ## What this is not
 
 - Not GitHub-hosted Actions (lab needs Ollama + Colima; no token next to model code).
-- Not automatic until you schedule it (cron / launchd / self-hosted runner calling this CLI).
 - Not a replacement for branch protection on `static` / `scanners` / `verify`.

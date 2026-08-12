@@ -14,7 +14,13 @@
     "studio:doctor": "security/studio/bootstrap.sh --check",
     "studio:check": "node security/studio/check-pr.mjs",
     "studio:targets": "node security/studio/check-pr.mjs --list-targets",
-    "studio:test": "bash security/studio/studio.test.sh"
+    "studio:test": "bash security/studio/studio.test.sh",
+    "studio:auto": "security/studio/auto-pr-check.sh --run",
+    "studio:auto:on": "security/studio/auto-pr-check.sh --on",
+    "studio:auto:off": "security/studio/auto-pr-check.sh --off",
+    "studio:auto:status": "security/studio/auto-pr-check.sh --status",
+    "studio:auto:install": "security/studio/bootstrap.sh --install-auto",
+    "studio:auto:uninstall": "security/studio/bootstrap.sh --uninstall-auto"
   },
   "license": "MIT"
 }

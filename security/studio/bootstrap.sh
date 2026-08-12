@@ -7,7 +7,9 @@
 #
 # Usage:
 #   security/studio/bootstrap.sh
-#   security/studio/bootstrap.sh --check   # doctor only, no installs
+#   security/studio/bootstrap.sh --check            # doctor only, no installs
+#   security/studio/bootstrap.sh --install-auto     # install LaunchAgent (auto PR checks, default ON)
+#   security/studio/bootstrap.sh --uninstall-auto
 #
 # Exit: 0 ready, 1 missing required pieces after install attempt, 2 usage error.
 
@@ -18,12 +20,18 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LAB_MODEL_DEFAULT="${SECURITY_LAB_MODEL:-qwen3-coder-next:q4_K_M}"
 
 CHECK_ONLY=0
-if [ "${1:-}" = "--check" ]; then
-  CHECK_ONLY=1
-elif [ -n "${1:-}" ]; then
-  echo "Usage: security/studio/bootstrap.sh [--check]" >&2
-  exit 2
-fi
+INSTALL_AUTO=0
+UNINSTALL_AUTO=0
+case "${1:-}" in
+  --check) CHECK_ONLY=1 ;;
+  --install-auto) INSTALL_AUTO=1 ;;
+  --uninstall-auto) UNINSTALL_AUTO=1 ;;
+  "") ;;
+  *)
+    echo "Usage: security/studio/bootstrap.sh [--check|--install-auto|--uninstall-auto]" >&2
+    exit 2
+    ;;
+esac
 
 # Non-interactive Studio shells often miss brew / OrbStack / go bins.
 export PATH="${HOME}/.local/bin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/opt/docker/bin:${HOME}/go/bin:${PATH:-}"
@@ -393,7 +401,43 @@ check_repo() {
   fi
 }
 
+check_auto_pr() {
+  head "Auto PR-ready check (LaunchAgent)"
+  local auto="$ROOT/security/studio/auto-pr-check.sh"
+  if [ ! -x "$auto" ] && [ -f "$auto" ]; then
+    chmod +x "$auto" 2>/dev/null || true
+  fi
+  if [ ! -f "$auto" ]; then
+    warn "auto-pr-check.sh missing"
+    return 0
+  fi
+  # Parse --status without failing the doctor.
+  local st
+  st="$("$auto" --status 2>/dev/null || true)"
+  if echo "$st" | grep -q 'disabled:[[:space:]]*yes'; then
+    warn "auto-pr-check kill switch ON — re-enable: security/studio/auto-pr-check.sh --on"
+  elif echo "$st" | grep -q 'launch_agent:[[:space:]]*loaded'; then
+    ok "auto-pr-check ON (launchd loaded, no kill switch)"
+  elif echo "$st" | grep -q 'launch_agent:[[:space:]]*installed'; then
+    warn "auto-pr-check plist installed but not loaded — bootstrap --install-auto"
+  else
+    warn "auto-pr-check not installed — security/studio/bootstrap.sh --install-auto (default ON)"
+  fi
+  if [ -f "$HOME/.config/security-scan/auto-pr-check.off" ]; then
+    warn "kill switch file: $HOME/.config/security-scan/auto-pr-check.off"
+  fi
+}
+
 # ---------------------------------------------------------------- main
+
+if [ "$INSTALL_AUTO" = 1 ]; then
+  bash "$ROOT/security/studio/auto-pr-check.sh" --install-agent
+  exit $?
+fi
+if [ "$UNINSTALL_AUTO" = 1 ]; then
+  bash "$ROOT/security/studio/auto-pr-check.sh" --uninstall-agent
+  exit $?
+fi
 
 printf '\033[1msecurity-scan · Studio bootstrap\033[0m\n'
 printf 'root: %s\n' "$ROOT"
@@ -408,6 +452,7 @@ install_scanners
 check_ai
 check_lab
 check_repo
+check_auto_pr
 
 head "Summary"
 printf '  ok=%s  warn=%s  fail=%s\n' "$PASS" "$WARN" "$FAIL"
@@ -420,4 +465,8 @@ printf '\033[32mStudio ready.\033[0m Run a PR check:\n'
 printf '  node security/studio/check-pr.mjs --target dfx-api --pr <N> --post\n'
 printf '  node security/studio/check-pr.mjs --local --target security-scan --base origin/master\n'
 printf '  Lab model default: ollama:%s\n' "$LAB_MODEL_DEFAULT"
+printf 'Auto PR-ready checks (LaunchAgent, default ON):\n'
+printf '  security/studio/bootstrap.sh --install-auto\n'
+printf '  security/studio/auto-pr-check.sh --off   # pause without uninstall\n'
+printf '  security/studio/auto-pr-check.sh --on    # resume (default)\n'
 exit 0
