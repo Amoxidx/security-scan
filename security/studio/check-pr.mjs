@@ -577,8 +577,8 @@ function stageHarness(subject, outDir, diffPath) {
 }
 
 function stageLab(subject, outDir, candidates, diffPath, config) {
-  log('lab', `${candidates.length} candidate(s) -> Ollama sandbox`);
   if (!candidates.length) {
+    log('lab', '0 candidate(s) -> Ollama sandbox');
     return { name: 'lab', exit: 0, results: [], blocked: false, model: null };
   }
 
@@ -592,7 +592,10 @@ function stageLab(subject, outDir, candidates, diffPath, config) {
   const slice = candidates.slice(0, maxLab);
   const results = [];
 
-  console.log(`  model=${model} maxLab=${maxLab} timeoutS=${timeoutS} maxTurns=${maxTurns}`);
+  log(
+    'lab',
+    `${candidates.length} candidate(s) -> Ollama sandbox · model=${model} maxLab=${maxLab} timeoutS=${timeoutS} maxTurns=${maxTurns}`,
+  );
 
   const codeDir = join(outDir, 'lab-code');
   if (existsSync(codeDir)) rmSync(codeDir, { recursive: true, force: true });
