@@ -12,6 +12,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 
 /** Env vars named by any provider's apiKeyEnv, cleared so child processes cannot inherit them. */
 export function scrubbedEnv(config, base = process.env, extra = {}) {
@@ -31,6 +32,31 @@ export function splitSpec(config, spec) {
   return { providerName: spec.slice(0, i), model: spec.slice(i + 1) };
 }
 
+/**
+ * Resolve the argv for a CLI provider.
+ * On Studio, claude-cli often needs security/studio/claude-via-gui.sh so SSH can
+ * reach the GUI-login keychain — set SECURITY_CLAUDE_WRAPPER to that absolute path.
+ */
+export function resolveCliCommand(provider, providerName) {
+  const cmd = Array.isArray(provider?.command) ? [...provider.command] : [];
+  if (providerName === 'claude-cli') {
+    const wrap = process.env.SECURITY_CLAUDE_WRAPPER;
+    if (wrap && existsSync(wrap)) {
+      // Keep flags after the binary (usually '-p'); replace only argv[0].
+      if (cmd.length === 0) return [wrap, '-p'];
+      return [wrap, ...cmd.slice(1)];
+    }
+  }
+  return cmd;
+}
+
+function cliBinaryExists(bin) {
+  if (!bin) return false;
+  if (bin.includes('/') || bin.startsWith('.')) return existsSync(bin);
+  // Pass bin as $1 so a name with shell metacharacters cannot inject into -c.
+  return spawnSync('sh', ['-c', 'command -v "$1"', 'sh', bin], { encoding: 'utf8' }).status === 0;
+}
+
 const availability = new Map();
 
 /** Why a provider cannot be used, or null when it can. */
@@ -41,9 +67,9 @@ export function unavailableReason(config, name) {
   if (!p) {
     reason = `no provider named '${name}' in config`;
   } else if (p.type === 'cli') {
-    const bin = p.command[0];
-    // Pass bin as $1 so a name with shell metacharacters cannot inject into -c.
-    if (spawnSync('sh', ['-c', 'command -v "$1"', 'sh', bin], { encoding: 'utf8' }).status !== 0) {
+    const cmd = resolveCliCommand(p, name);
+    const bin = cmd[0];
+    if (!cliBinaryExists(bin)) {
       reason = `'${bin}' not on PATH`;
     }
   } else if (!process.env[p.apiKeyEnv]) {
@@ -90,12 +116,14 @@ async function withSlot(limit, fn) {
 
 /** A subscription coding agent in headless mode. Prompt on stdin, answer on stdout. */
 function callCli(config, target, system, user) {
-  const { provider, model } = target;
-  const argv = [...provider.command.slice(1)];
+  const { provider, model, providerName } = target;
+  const full = resolveCliCommand(provider, providerName);
+  const bin = full[0];
+  const argv = full.slice(1);
   if (provider.modelFlag) argv.push(provider.modelFlag, model);
 
   return new Promise((resolve_, reject) => {
-    const child = spawn(provider.command[0], argv, {
+    const child = spawn(bin, argv, {
       stdio: ['pipe', 'pipe', 'pipe'],
       // The agent must not inherit the gate's own model credentials.
       env: scrubbedEnv(config),
@@ -104,7 +132,7 @@ function callCli(config, target, system, user) {
     let err = '';
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      reject(new Error(`${provider.command[0]} timed out`));
+      reject(new Error(`${bin} timed out`));
     }, provider.timeoutMs || 300000);
 
     child.stdout.on('data', (d) => { out += d; });
@@ -112,7 +140,7 @@ function callCli(config, target, system, user) {
     child.on('error', (e) => { clearTimeout(timer); reject(e); });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (code !== 0) reject(new Error(`${provider.command[0]} exited ${code}: ${err.slice(0, 300)}`));
+      if (code !== 0) reject(new Error(`${bin} exited ${code}: ${err.slice(0, 300)}`));
       else resolve_(out);
     });
 

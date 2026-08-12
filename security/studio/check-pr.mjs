@@ -227,7 +227,9 @@ function stageEnv(base = process.env) {
   const env = { ...base };
   if (hostExtra) env.SECURITY_HOST_ALLOW_EXTRA = hostExtra;
   // Lab / docker resolution on Studio non-interactive shells (OrbStack + brew + go).
+  // Prepend security/studio so `claude-via-gui` is found when linked only in-repo.
   env.PATH = [
+    join(REPO_ROOT, 'security/studio'),
     `${homedir()}/.local/bin`,
     '/usr/local/bin',
     '/opt/homebrew/opt/docker/bin',
@@ -249,6 +251,10 @@ function stageEnv(base = process.env) {
       /* resolveDockerBin always returns a string; ignore */
     }
   }
+  // Subscription-agent OAuth lives in the login keychain; SSH cannot read it.
+  // providers.mjs routes claude-cli through this wrapper (Aqua GUI domain when needed).
+  const claudeWrap = join(REPO_ROOT, 'security/studio/claude-via-gui.sh');
+  if (existsSync(claudeWrap)) env.SECURITY_CLAUDE_WRAPPER = claudeWrap;
   return env;
 }
 

@@ -13,7 +13,14 @@ Zwei Stufen **können dort nicht** laufen, ohne die Trust-Boundary zu brechen:
    darf keinen Checkout-Token im selben Job sehen
 
 Studio (`dfxai-remote`) hat genau diesen Stack: Node 22+, Ollama
-`qwen3-coder-next:q4_K_M`, Colima, Codex, Claude, Semgrep, OSV, Gitleaks.
+`qwen3-coder-next:q4_K_M`, Colima, Codex, coding-agent CLI (Max, Login-Keychain), Semgrep,
+OSV, Gitleaks.
+
+**Coding-agent CLI unter SSH:** OAuth liegt in der Login-Keychain. Nicht-interaktive
+SSH-Sessions sehen oft `loggedIn: false`, obwohl die Desktop-Session eingeloggt ist.
+Abhilfe: `security/studio/claude-via-gui.sh` — von `check-pr` über
+`SECURITY_CLAUDE_WRAPPER` gesetzt; startet den Agenten bei Bedarf im Aqua-Domain
+(`launchctl gui/$UID`).
 
 ## Entry Point
 

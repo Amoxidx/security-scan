@@ -43,6 +43,75 @@ short() { echo "$1" | tr '\n' ' ' | cut -c1-220; }
 
 set +e
 
+echo "=== claude-via-gui.sh present + syntax ==="
+{
+  WRAP="$ROOT/security/studio/claude-via-gui.sh"
+  if [ ! -f "$WRAP" ]; then
+    case_result "claude-via-gui.sh exists" 0 "missing"
+  else
+    run bash -n "$WRAP"
+    if [ "$RUN_RC" -eq 0 ]; then
+      case_result "claude-via-gui.sh bash -n" 1
+    else
+      case_result "claude-via-gui.sh bash -n" 0 "$(short "$RUN_OUT")"
+    fi
+    if [ -x "$WRAP" ] || chmod +x "$WRAP" 2>/dev/null; then
+      case_result "claude-via-gui.sh executable" 1
+    else
+      case_result "claude-via-gui.sh executable" 0 "not executable"
+    fi
+  fi
+}
+
+echo "=== resolveCliCommand (SECURITY_CLAUDE_WRAPPER) ==="
+{
+  cat > "$WORK/cli-wrap.mjs" <<'EOF'
+import { pathToFileURL } from 'node:url';
+import { writeFileSync, chmodSync } from 'node:fs';
+import { join } from 'node:path';
+
+async function main() {
+  const providersPath = process.argv[2];
+  const work = process.env.WORK;
+  const wrap = join(work, 'fake-claude-wrap.sh');
+  writeFileSync(wrap, '#!/bin/sh\nexit 0\n');
+  chmodSync(wrap, 0o755);
+
+  const m = await import(pathToFileURL(providersPath).href);
+  const provider = { type: 'cli', command: ['claude', '-p'], modelFlag: '--model' };
+
+  delete process.env.SECURITY_CLAUDE_WRAPPER;
+  let cmd = m.resolveCliCommand(provider, 'claude-cli');
+  if (cmd[0] !== 'claude' || cmd[1] !== '-p') {
+    console.error('default command broken', cmd);
+    process.exit(1);
+  }
+
+  process.env.SECURITY_CLAUDE_WRAPPER = wrap;
+  cmd = m.resolveCliCommand(provider, 'claude-cli');
+  if (cmd[0] !== wrap || cmd[1] !== '-p') {
+    console.error('wrapper not applied', cmd);
+    process.exit(1);
+  }
+
+  // Non-claude providers ignore the wrapper.
+  cmd = m.resolveCliCommand({ type: 'cli', command: ['codex', 'exec'] }, 'codex-cli');
+  if (cmd[0] !== 'codex') {
+    console.error('codex polluted', cmd);
+    process.exit(1);
+  }
+  console.log('ok');
+}
+main().catch((e) => { console.error(e); process.exit(1); });
+EOF
+  run env WORK="$WORK" node "$WORK/cli-wrap.mjs" "$ROOT/security/redteam/providers.mjs"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "resolveCliCommand honors SECURITY_CLAUDE_WRAPPER" 1
+  else
+    case_result "resolveCliCommand honors SECURITY_CLAUDE_WRAPPER" 0 "$(short "$RUN_OUT")"
+  fi
+}
+
 echo "=== resolveDockerBin ==="
 {
   cat > "$WORK/docker-resolve.mjs" <<'EOF'

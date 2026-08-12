@@ -16,7 +16,7 @@
     },
     "claude-cli": {
       "type": "cli",
-      "$comment": "Claude Code on a Claude subscription. Same idea, different seat.",
+      "$comment": "Subscription coding-agent CLI (binary: claude). On Studio/SSH set SECURITY_CLAUDE_WRAPPER to security/studio/claude-via-gui.sh (check-pr does this) so the login keychain is reachable via the Aqua GUI domain.",
       "command": [
         "claude",
         "-p"
