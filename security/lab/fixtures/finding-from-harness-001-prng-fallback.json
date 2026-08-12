@@ -1,0 +1,64 @@
+{
+  "title": "Entropy failure silently returns a predictable seed from Math.random",
+  "file": "src/entropy.ts",
+  "line": 9,
+  "lens": "fallback",
+  "severity": "critical",
+  "root_cause": "When crypto.randomBytes throws, generateSeed silently substitutes bytes from non-cryptographic Math.random and returns the same plausible-looking Buffer shape. Callers receive no indication that the seed's cryptographic entropy guarantee was lost.",
+  "attacker_model": "An attacker who can induce or anticipate crypto.randomBytes failure\u2014for example by controlling or repeatedly triggering device startup when the entropy pool is unavailable\u2014and can model the runtime's Math.random state reaches this branch through generateSeed calls and obtains the generated seed or private keys derived from it.",
+  "attack_path": [
+    "The attacker causes or waits for a boot environment in which crypto.randomBytes throws.",
+    "generateSeed catches the failure and fills the requested seed using Math.random without signaling degradation.",
+    "The attacker predicts or searches the weaker PRNG output and reconstructs the seed and any keys derived from it."
+  ],
+  "impact": "The attacker obtains wallet seed material and derived private keys, enabling theft of funds controlled by those keys.",
+  "guarantee_broken": "Seed generation no longer guarantees cryptographically unpredictable randomness when the operating-system CSPRNG is unavailable, while the API continues to report success.",
+  "confidence": "high",
+  "how_to_disprove": "Show that crypto.randomBytes cannot throw on every supported runtime and deployment, or that every generateSeed caller independently rejects fallback-derived output and never uses it for secrets or cryptographic keys.",
+  "huntModel": "codex-cli:gpt-5.6-sol",
+  "lenses": [
+    "fallback"
+  ],
+  "verdicts": [
+    {
+      "model": "ollama:qwen3-coder-next:q4_K_M",
+      "refuted": true,
+      "reason": "The `crypto.randomBytes` function from Node.js's built-in `crypto` module is specified to never throw in current and all supported versions of Node.js (v14+ through v22+), per the official API documentation: 'This function will *never* throw an error.' (see https://nodejs.org/api/crypto.html#cryptorandombytessize-callback). Therefore, the `catch` block at src/entropy.ts:9\u201316 is unreachable in all supported Node.js environments. Since the fallback path cannot execute, there is no entropy degradation vector.",
+      "axis": "semantics",
+      "severity": "low",
+      "correction": "",
+      "residual_risk": "The fallback code remains dead and should be removed to avoid future confusion; however, its presence poses no runtime risk because the condition it guards against cannot occur in Node.js.",
+      "inconclusive": false
+    }
+  ],
+  "refutations": 1,
+  "survived": false,
+  "_provenance": {
+    "source": "security/redteam/harness.mjs real run (not hand-written)",
+    "corpus_case": "security/eval/corpus/vuln/001-prng-fallback",
+    "selected": "first critical entry in findings.json by severity rank",
+    "captured_at": "2026-08-12T07:10:07.438226+00:00",
+    "corpus_note": "Chose 001 (fallback lens) after 007-path-traversal yielded 0 findings under default lenses fallback/entropy/state (path-traversal is parser-class).",
+    "diff_shape": "git unified diff of before/ -> after/ for src/entropy.ts",
+    "harness_config": "temp /tmp/harness-config-real-run.json (not committed): hunt/verify/report on codex-cli:gpt-5.6-sol + ollama:qwen3-coder-next:q4_K_M; claude-cli binary present but not logged in; kimi-cli not on PATH",
+    "harness_result": "2 raw findings after dedupe; both critical; 0 survived verification (ollama refuted); findings.json still contains the full verified candidate objects",
+    "lab_command": "node security/lab/run.mjs --finding security/lab/fixtures/finding-from-harness-001-prng-fallback.json --code-dir security/eval/corpus/vuln/001-prng-fallback/after --model ollama:qwen3-coder-next:q4_K_M",
+    "lab_report": "security/lab/fixtures/report-from-harness-001-prng-fallback.json",
+    "lab_verdict": "not-reproduced",
+    "schema_delta_vs_handwritten_fixture": {
+      "present_only_in_harness": [
+        "huntModel",
+        "lenses",
+        "verdicts",
+        "refutations",
+        "survived"
+      ],
+      "present_only_in_handwritten_fixture": [
+        "id",
+        "summary",
+        "cwe"
+      ],
+      "lab_handling": "run.mjs embeds the full JSON via JSON.stringify in buildInitialUserMessage; report title uses title||summary||id \u2014 no field-name mismatch blocked the run"
+    }
+  }
+}

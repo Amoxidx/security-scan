@@ -9,10 +9,11 @@ Bitcoin Red Teams. Die Herleitung — was belegt ist, was rekonstruiert — steh
 ```
 security/
 ├── gate/static-checks.sh        Stufe A — deterministisch, immer, blockiert immer
-└── redteam/
-    ├── harness.mjs              Stufe B — hunt → dedupe → verify → report
-    ├── config.json              Lenses, Modelle, Blocking-Schwelle
-    └── prompts/                 00-system, 01-recon, 02-hunt, 03-verify, 04-repro, 05-report
+├── redteam/
+│   ├── harness.mjs              Stufe B — hunt → dedupe → verify → report
+│   ├── config.json              Lenses, Modelle, Blocking-Schwelle
+│   └── prompts/                 00-system, 01-recon, 02-hunt, 03-verify, 04-repro, 05-report
+└── lab/                         manuelles Repro-Lab (nie CI) — siehe Abschnitt unten
 ```
 
 Verdrahtet in [`.github/workflows/security-scan.yml`](../.github/workflows/security-scan.yml).
@@ -46,6 +47,109 @@ löst. Die Repro-Stufe gehört in den manuellen Audit-Lauf, in einer Sandbox, oh
 ohne Repo-Credentials. Deshalb sagt der PR-Kommentar explizit *verifiziert, nicht
 reproduziert*: ein blockierendes Finding heißt "ein Mensch muss draufschauen", nicht
 "bestätigter Exploit".
+
+## Lokales Repro-Lab (`security/lab/`)
+
+Umsetzung genau dieser Entscheidung als **manuelles** Kommandozeilenwerkzeug — nicht als
+CI-Job. Findings, die die `verify`-Stufe (k-of-n Refutation) überstehen, sind sonst nur durch
+Modell-Meinung abgesichert; das Lab holt **machine evidence**, indem es ein lokales
+Coding-Modell (Standard: `qwen3-coder-next` über Ollama) einen Repro-Skript-Vorschlag
+schreiben und in Isolation ausführen lässt.
+
+**Läuft nur lokal, nur manuell, nie in GitHub Actions.** Die Workflows unter
+`.github/workflows/` bleiben unberührt. Kein neuer Trigger, kein neuer Job.
+
+### Was es macht
+
+1. Liest ein Finding (Schema wie `harness.mjs` / `triage.mjs`) und den betroffenen Codebaum.
+2. Spricht Ollama über die bestehende OpenAI-kompatible Provider-Route
+   (`config.json` → Provider `ollama`, `type: "openai"`,
+   `baseUrl: "http://localhost:11434/v1"`).
+3. Treibt eine enge execute/conclude-Schleife: das Modell liefert JSON mit einem Skript,
+   das Lab schreibt es in ein **ephemeres** Workdir und startet es in einem Container.
+4. Schreibt einen Bericht nach `--out` mit Verdict
+   `reproduced` | `not-reproduced` | `inconclusive`, Sandbox-Logs und Modell-Begründung.
+
+### Sandbox
+
+Container über colima/docker (auf dieser Maschine: `colima start`, danach `docker`):
+
+| Maßnahme | Wert |
+|---|---|
+| Netzwerk | `--network none` |
+| Lebensdauer | `--rm` (nach jedem Lauf weg) |
+| Mount | nur das gestagte Workdir — **kein** `.git`, kein Host-Home, kein Docker-Socket |
+| Credentials | Allowlist-Env im Container; `GH_TOKEN` / API-Keys / `SSH_AUTH_SOCK` leer |
+| Ressourcen | `--memory` / `--cpus` (Defaults: 512m / 1) |
+| Zeit | Wrapper-Timeout im Skript **und** `timeout` im Container — beides |
+
+### Nicht-Konvergenz (fail closed)
+
+Frühere Läufe mit demselben Modell konnten in Endlosschleifen hängen. Das Lab hat deshalb:
+
+- harten **Turn-Cap** (`--max-turns`, Default 6)
+- harten **Wall-Clock** (`--timeout-s`, Default 600)
+- Prozess-Hard-Kill kurz hinter dem Wall-Clock
+
+Reißt eines der Limits, endet der Lauf mit
+
+```text
+inconclusive — did not converge within <N> turns / <T>s
+```
+
+und Exit-Code **2**. „Kein Ergebnis“ ist **nicht** „sicher“ und wird auch nicht als
+`not-reproduced` gemeldet.
+
+### Voraussetzungen
+
+```bash
+# einmalig / bei Bedarf — Formula (nicht nur die Desktop-App):
+brew install ollama
+brew services start ollama   # oder: $(brew --prefix ollama)/bin/ollama serve
+
+# Quant: q4_K_M (~46 GB RAM). q8_0 (~85 GB) nur wenn gemessen ≥20 GB Puffer frei bleiben.
+ollama pull qwen3-coder-next:q4_K_M
+
+colima start                 # docker-CLI spricht danach den colima-Socket
+docker pull node:22-bookworm-slim
+```
+
+Das gestagte Sandbox-Workdir liegt unter `$HOME/.cache/security-lab/` (nicht unter
+`/tmp`): colima mountet standardmäßig nur das Home-Verzeichnis; Bind-Mounts aus
+`/tmp` oder `/private/tmp` erscheinen im Container leer.
+
+### Aufruf
+
+```bash
+node security/lab/run.mjs \
+  --finding security/lab/fixtures/finding-proto-pollution.json \
+  --code-dir security/eval/corpus/vuln/006-proto-pollution/after \
+  --out /tmp/lab-report
+
+# Gegenprobe fail-closed (muss inconclusive liefern):
+node security/lab/run.mjs \
+  --finding security/lab/fixtures/finding-proto-pollution.json \
+  --code-dir security/eval/corpus/vuln/006-proto-pollution/after \
+  --max-turns 1 \
+  --timeout-s 2 \
+  --out /tmp/lab-report-cap
+```
+
+Exit-Codes: `0` = conclusively `reproduced` oder `not-reproduced`, `2` = `inconclusive`,
+`3` = Setup-Fehler (Config, fehlendes Image, Modell nicht erreichbar).
+
+Provider-Eintrag in `redteam/config.json` (kein neuer Transport-Typ):
+
+```json
+"ollama": {
+  "type": "openai",
+  "baseUrl": "http://localhost:11434/v1",
+  "apiKeyEnv": "OLLAMA_API_KEY"
+}
+```
+
+`run.mjs` setzt `OLLAMA_API_KEY=ollama`, wenn die Variable fehlt (Ollama ignoriert den
+Auth-Header).
 
 ## Provider: Abo statt Pay-per-Use
 

@@ -62,6 +62,12 @@
       "$comment": "OpenCode Zen \u2014 the Red Team's own setup: one key, many models, pay-per-use.",
       "baseUrl": "https://opencode.ai/zen/v1",
       "apiKeyEnv": "SECURITY_AI_API_KEY"
+    },
+    "ollama": {
+      "type": "openai",
+      "$comment": "Local Ollama OpenAI-compatible endpoint for the manual repro lab (security/lab). Not used by CI. Set OLLAMA_API_KEY to any non-empty string (Ollama ignores auth); lab/run.mjs defaults it to 'ollama' when unset.",
+      "baseUrl": "http://localhost:11434/v1",
+      "apiKeyEnv": "OLLAMA_API_KEY"
     }
   },
   "hunt": {
