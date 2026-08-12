@@ -13,7 +13,8 @@ security/
 │   ├── harness.mjs              Stufe B — hunt → dedupe → verify → report
 │   ├── config.json              Lenses, Modelle, Blocking-Schwelle
 │   └── prompts/                 00-system, 01-recon, 02-hunt, 03-verify, 04-repro, 05-report
-└── lab/                         manuelles Repro-Lab (nie CI) — siehe Abschnitt unten
+├── lab/                         manuelles Repro-Lab (nie CI) — siehe Abschnitt unten
+└── studio/                      Studio-Orchestrierung: PR-Check + Lab-Evidenz (nie GitHub-hosted CI)
 ```
 
 Verdrahtet in [`.github/workflows/security-scan.yml`](../.github/workflows/security-scan.yml).
@@ -47,6 +48,26 @@ löst. Die Repro-Stufe gehört in den manuellen Audit-Lauf, in einer Sandbox, oh
 ohne Repo-Credentials. Deshalb sagt der PR-Kommentar explizit *verifiziert, nicht
 reproduziert*: ein blockierendes Finding heißt "ein Mensch muss draufschauen", nicht
 "bestätigter Exploit".
+
+## Studio-Check (`security/studio/`)
+
+Pipeline **auf Studio** — primär für **deine PRs**, vorbereitet für **andere Codebasen**:
+
+```bash
+bash security/studio/bootstrap.sh
+node security/studio/check-pr.mjs --list-targets
+
+# Primär: PR mit Target (nutzt lokalen Clone als Worktree, wenn vorhanden)
+node security/studio/check-pr.mjs --target dfx-api --pr 1234 --post
+node security/studio/check-pr.mjs --target dfx-services --pr 99 --post
+
+# Sekundär: beliebigen Tree testen
+node security/studio/check-pr.mjs --dir /path/to/code --mode tree --skip-ai
+```
+
+Modi: `pr` | `local` | `tree`. Targets: `targets.json` (dfx-api, dfx-services, …).
+Stufen: static → scanners → triage → harness → Lab → Gate.
+Details: [`security/studio/README.md`](studio/README.md).
 
 ## Lokales Repro-Lab (`security/lab/`)
 

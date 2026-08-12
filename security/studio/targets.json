@@ -1,0 +1,71 @@
+{
+  "$comment": "Named targets for Studio checks. Primary use case is PR review on Studio; any target can also run in mode=tree against a local tree for testing other codebases. Paths are tried in order; first existing .git wins. ~ expands to $HOME.",
+  "defaultTarget": "security-scan",
+  "targets": {
+    "security-scan": {
+      "label": "Amoxidx security-scan (gate itself)",
+      "repo": "Amoxidx/security-scan",
+      "defaultBase": "master",
+      "localPaths": [
+        "~/Amoxidx/security-scan",
+        "/Users/joshua/Amoxidx/security-scan",
+        "/Users/joshuaai/Amoxidx/security-scan"
+      ],
+      "hostAllowExtra": [],
+      "primary": true,
+      "notes": "Authority repo. Static gate uses the built-in host allowlist."
+    },
+    "dfx-api": {
+      "label": "DFX API",
+      "repo": "DFXswiss/api",
+      "defaultBase": "develop",
+      "localPaths": [
+        "~/DFXswiss/api",
+        "/Users/joshua/DFXswiss/api",
+        "/Users/joshuaai/DFXswiss/api"
+      ],
+      "hostAllowExtra": [
+        "api\\.dfx\\.swiss",
+        "dev\\.dfx\\.swiss",
+        "app\\.dfx\\.swiss",
+        "services\\.dfx\\.swiss"
+      ],
+      "notes": "Primary product surface. Prefer local checkout over clone."
+    },
+    "dfx-services": {
+      "label": "DFX services",
+      "repo": "DFXswiss/services",
+      "defaultBase": "develop",
+      "localPaths": [
+        "~/DFXswiss/services",
+        "/Users/joshua/DFXswiss/services",
+        "/Users/joshuaai/DFXswiss/services"
+      ],
+      "hostAllowExtra": [
+        "api\\.dfx\\.swiss",
+        "dev\\.dfx\\.swiss",
+        "app\\.dfx\\.swiss",
+        "services\\.dfx\\.swiss"
+      ]
+    },
+    "herbert-hq": {
+      "label": "Herbert HQ",
+      "repo": "Amoxidx/Herbert-HQ",
+      "defaultBase": "main",
+      "localPaths": [
+        "~/Amoxidx/Herbert-HQ",
+        "/Users/joshua/Amoxidx/Herbert-HQ",
+        "/Users/joshuaai/Amoxidx/Herbert-HQ"
+      ],
+      "hostAllowExtra": []
+    },
+    "generic": {
+      "label": "Any local tree (future / ad-hoc codebases)",
+      "repo": null,
+      "defaultBase": "origin/master",
+      "localPaths": [],
+      "hostAllowExtra": [],
+      "notes": "Use with --dir <path>. For full-repo tests: --mode tree. Static host allowlist stays strict unless you pass --host-allow-extra."
+    }
+  }
+}

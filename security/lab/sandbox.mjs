@@ -10,8 +10,8 @@
  *   - memory + CPU caps on the container; caller also applies a wrapper timeout
  */
 
-import { spawn } from 'node:child_process';
-import { writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { writeFileSync, mkdirSync, existsSync, chmodSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const DEFAULT_IMAGE = 'node:22-bookworm-slim';
@@ -32,6 +32,49 @@ function containerEnv() {
     AWS_SECRET_ACCESS_KEY: '',
     AWS_ACCESS_KEY_ID: '',
   };
+}
+
+/**
+ * Locate a docker CLI binary.
+ *
+ * Studio (and many brew hosts) install the formula under Cellar but do not always put
+ * `docker` on PATH for non-interactive shells. OrbStack puts a shim under /usr/local/bin.
+ * Prefer DOCKER_BIN, then PATH, then known install locations.
+ */
+export function resolveDockerBin() {
+  if (process.env.DOCKER_BIN && existsSync(process.env.DOCKER_BIN)) {
+    return process.env.DOCKER_BIN;
+  }
+  const which = spawnSync('sh', ['-c', 'command -v docker'], { encoding: 'utf8' });
+  if (which.status === 0) {
+    const p = which.stdout.trim();
+    if (p && existsSync(p)) return p;
+  }
+  const home = process.env.HOME || '';
+  const candidates = [
+    '/opt/homebrew/bin/docker',
+    '/usr/local/bin/docker',
+    '/opt/homebrew/opt/docker/bin/docker',
+    '/usr/local/opt/docker/bin/docker',
+    join(home, '.docker/bin/docker'),
+  ];
+  // brew Cellar: /opt/homebrew/Cellar/docker/<ver>/bin/docker
+  for (const cellar of ['/opt/homebrew/Cellar/docker', '/usr/local/Cellar/docker']) {
+    if (!existsSync(cellar)) continue;
+    try {
+      const vers = readdirSync(cellar).sort().reverse();
+      for (const v of vers) {
+        const bin = join(cellar, v, 'bin', 'docker');
+        if (existsSync(bin)) candidates.push(bin);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  for (const p of candidates) {
+    if (p && existsSync(p)) return p;
+  }
+  return 'docker'; // last resort — spawn will surface ENOENT
 }
 
 /**
@@ -94,20 +137,26 @@ function run(cmd, args, { cwd, env, timeoutMs } = {}) {
   });
 }
 
+function dockerBin() {
+  return resolveDockerBin();
+}
+
 /** Ensure the sandbox image is present (pull needs host network; run does not). */
 export async function ensureImage(image = DEFAULT_IMAGE, { timeoutMs = 600_000 } = {}) {
   const env = dockerEnv();
-  const inspect = await run('docker', ['image', 'inspect', image], { env, timeoutMs: 30_000 });
-  if (inspect.exitCode === 0) return { ok: true, image, pulled: false };
-  const pull = await run('docker', ['pull', image], { env, timeoutMs });
+  const bin = dockerBin();
+  const inspect = await run(bin, ['image', 'inspect', image], { env, timeoutMs: 30_000 });
+  if (inspect.exitCode === 0) return { ok: true, image, pulled: false, dockerBin: bin };
+  const pull = await run(bin, ['pull', image], { env, timeoutMs });
   if (pull.exitCode !== 0) {
     return {
       ok: false,
       image,
+      dockerBin: bin,
       error: `docker pull ${image} failed: ${(pull.stderr || pull.stdout || pull.error || '').slice(0, 500)}`,
     };
   }
-  return { ok: true, image, pulled: true };
+  return { ok: true, image, pulled: true, dockerBin: bin };
 }
 
 /**
@@ -183,7 +232,8 @@ export async function runInSandbox({
     ...runCommand,
   ];
 
-  const result = await run('docker', args, {
+  const bin = dockerBin();
+  const result = await run(bin, args, {
     env: dockerEnv(),
     // Wrapper slightly above container timeout so docker can report cleanly.
     timeoutMs: timeoutMs + 15_000,
@@ -192,6 +242,7 @@ export async function runInSandbox({
   return {
     ok: true,
     image,
+    dockerBin: bin,
     memory,
     cpus,
     network: 'none',

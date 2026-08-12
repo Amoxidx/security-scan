@@ -33,6 +33,7 @@ Die Herleitung im Detail:
 | [Setup-Evaluation](docs/security/setup-evaluation.md) | Welche Harness, welches Modell, welche Werkzeuge, Graphs, Hooks — mit Evidenz |
 | [Implementierungsplan](docs/security/implementation-plan.md) | Phasen 0–7, Aufwand, Risiken, Definition of Done |
 | [Messungen](docs/security/measurements.md) | Fortlaufendes Messprotokoll |
+| [Studio-Pfad](docs/security/studio-path.md) | PR-Checks auf Studio mit Lab-Evidenz (Issue #7 Ende) |
 
 ---
 
@@ -48,6 +49,7 @@ Die Herleitung im Detail:
 | 5 — Graph-Kontext | offen (CodeQL-DB deckt den Bedarf vorerst) |
 | 6 — Hooks (3 Ebenen) | **fertig** — Agent, Commit, CI |
 | 7 — Scharfschalten | offen, wartet auf Phase-2-Messung |
+| Studio-Pfad (Lab-Evidenz auf PRs) | **gebaut** — `security/studio/`, manuell / lokal, nie GitHub-hosted CI |
 
 **Aktuell gemessen** (statisches Gate + Scanner, ohne AI-Stufe — [Details](docs/security/measurements.md)).
 Die Spalte „Schwelle“ ist erzwungen: `eval/run.mjs` endet mit Exit ≠ 0, wenn Detection oder
@@ -127,6 +129,11 @@ node security/eval/run.mjs              # vollständig
 
 # Hooks installieren
 security/hooks/install.sh
+
+# Studio — voller PR-Check inkl. lokalem Lab (Ollama + Colima)
+bash security/studio/bootstrap.sh
+node security/studio/check-pr.mjs --pr <N> --repo <owner/name> --post
+node security/studio/check-pr.mjs --local --base origin/master
 ```
 
 Das Gate selbst (Suite, `static-checks`, `eval/run.mjs`) läuft unter Node ≥ 20 — im CI
