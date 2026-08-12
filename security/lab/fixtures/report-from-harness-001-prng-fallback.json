@@ -1,0 +1,87 @@
+{
+  "verdict": "not-reproduced",
+  "reasoning": "The finding claims that crypto.randomBytes can throw and fall back to Math.random, but according to Node.js documentation (and the refutation in the finding itself), crypto.randomBytes never throws in any supported Node.js version. Therefore, the fallback branch is unreachable and cannot be executed. No script can reproduce entropy degradation because the condition required to trigger it (an exception from randomBytes) is impossible by design.",
+  "blocker": "The claimed defect relies on a code path that cannot execute: crypto.randomBytes never throws in Node.js, making the catch block dead code.",
+  "finding": {
+    "title": "Entropy failure silently returns a predictable seed from Math.random",
+    "file": "src/entropy.ts",
+    "line": 9,
+    "lens": "fallback",
+    "severity": "critical",
+    "root_cause": "When crypto.randomBytes throws, generateSeed silently substitutes bytes from non-cryptographic Math.random and returns the same plausible-looking Buffer shape. Callers receive no indication that the seed's cryptographic entropy guarantee was lost.",
+    "attacker_model": "An attacker who can induce or anticipate crypto.randomBytes failure—for example by controlling or repeatedly triggering device startup when the entropy pool is unavailable—and can model the runtime's Math.random state reaches this branch through generateSeed calls and obtains the generated seed or private keys derived from it.",
+    "attack_path": [
+      "The attacker causes or waits for a boot environment in which crypto.randomBytes throws.",
+      "generateSeed catches the failure and fills the requested seed using Math.random without signaling degradation.",
+      "The attacker predicts or searches the weaker PRNG output and reconstructs the seed and any keys derived from it."
+    ],
+    "impact": "The attacker obtains wallet seed material and derived private keys, enabling theft of funds controlled by those keys.",
+    "guarantee_broken": "Seed generation no longer guarantees cryptographically unpredictable randomness when the operating-system CSPRNG is unavailable, while the API continues to report success.",
+    "confidence": "high",
+    "how_to_disprove": "Show that crypto.randomBytes cannot throw on every supported runtime and deployment, or that every generateSeed caller independently rejects fallback-derived output and never uses it for secrets or cryptographic keys.",
+    "huntModel": "codex-cli:gpt-5.6-sol",
+    "lenses": [
+      "fallback"
+    ],
+    "verdicts": [
+      {
+        "model": "ollama:qwen3-coder-next:q4_K_M",
+        "refuted": true,
+        "reason": "The `crypto.randomBytes` function from Node.js's built-in `crypto` module is specified to never throw in current and all supported versions of Node.js (v14+ through v22+), per the official API documentation: 'This function will *never* throw an error.' (see https://nodejs.org/api/crypto.html#cryptorandombytessize-callback). Therefore, the `catch` block at src/entropy.ts:9–16 is unreachable in all supported Node.js environments. Since the fallback path cannot execute, there is no entropy degradation vector.",
+        "axis": "semantics",
+        "severity": "low",
+        "correction": "",
+        "residual_risk": "The fallback code remains dead and should be removed to avoid future confusion; however, its presence poses no runtime risk because the condition it guards against cannot occur in Node.js.",
+        "inconclusive": false
+      }
+    ],
+    "refutations": 1,
+    "survived": false,
+    "_provenance": {
+      "source": "security/redteam/harness.mjs real run (not hand-written)",
+      "corpus_case": "security/eval/corpus/vuln/001-prng-fallback",
+      "diff": "unified git diff of before/ -> after/ (src/entropy.ts)",
+      "harness_out": "/tmp/lab-real-harness/out-001 (findings.json)",
+      "config": "/tmp/harness-config-real-run.json (temp copy; hunt/verify on codex-cli + ollama; no repo config change)",
+      "hunt_log": "2 raw findings -> 2 after dedupe; 0 survived verification (ollama refuted both)",
+      "selected": "first critical by severity rank among findings.json entries",
+      "note": "Finding was refuted in verify (survived=false) but is still a real harness-shaped object for lab schema validation. Lab is independent of harness survival.",
+      "captured_at": "2026-08-12T07:10:07.438226+00:00"
+    }
+  },
+  "model": "ollama:qwen3-coder-next:q4_K_M",
+  "provider": "ollama",
+  "resolvedModel": "qwen3-coder-next:q4_K_M",
+  "turnsUsed": 1,
+  "elapsedMs": 4313,
+  "limits": {
+    "maxTurns": 6,
+    "timeoutS": 600,
+    "hitTurnCap": false,
+    "hitWallClock": false
+  },
+  "sandbox": {
+    "image": "node:22-bookworm-slim",
+    "memory": "512m",
+    "cpus": "1",
+    "network": "none",
+    "perScriptTimeoutS": 60
+  },
+  "turns": [
+    {
+      "turn": 1,
+      "action": "conclude",
+      "verdict": "not-reproduced",
+      "reasoning": "The finding claims that crypto.randomBytes can throw and fall back to Math.random, but according to Node.js documentation (and the refutation in the finding itself), crypto.randomBytes never throws in any supported Node.js version. Therefore, the fallback branch is unreachable and cannot be executed. No script can reproduce entropy degradation because the condition required to trigger it (an exception from randomBytes) is impossible by design.",
+      "blocker": "The claimed defect relies on a code path that cannot execute: crypto.randomBytes never throws in Node.js, making the catch block dead code.",
+      "raw": {
+        "action": "conclude",
+        "verdict": "not-reproduced",
+        "reasoning": "The finding claims that crypto.randomBytes can throw and fall back to Math.random, but according to Node.js documentation (and the refutation in the finding itself), crypto.randomBytes never throws in any supported Node.js version. Therefore, the fallback branch is unreachable and cannot be executed. No script can reproduce entropy degradation because the condition required to trigger it (an exception from randomBytes) is impossible by design.",
+        "blocker": "The claimed defect relies on a code path that cannot execute: crypto.randomBytes never throws in Node.js, making the catch block dead code."
+      }
+    }
+  ],
+  "startedAt": "2026-08-12T07:10:07.559Z",
+  "finishedAt": "2026-08-12T07:10:11.874Z"
+}
