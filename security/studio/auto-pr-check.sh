@@ -41,7 +41,7 @@ die() { log "ERROR: $*"; exit 3; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
 cfg_get() {
-  # cfg_get <dot.path> [default]  — uses jq (no embedded print(); TF-safe)
+  # cfg_get <dot.path> [default]
   local path="$1" def="${2:-}" val
   if [ ! -f "$CFG_FILE" ]; then
     printf '%s' "$def"
