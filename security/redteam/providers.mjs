@@ -103,15 +103,16 @@ function cliUsageFromParsed(target, parsed) {
   };
 }
 
-function httpUsageFromJson(target, json) {
+/** Token usage from an HTTP response. Field names follow the schema selected by isAnthropic. */
+function httpUsageFromJson(target, json, isAnthropic) {
   const usage = json?.usage || {};
   return {
     ts: new Date().toISOString(),
     providerName: target.providerName,
     model: target.model,
     kind: 'http',
-    inputTokens: usage.input_tokens ?? usage.prompt_tokens ?? null,
-    outputTokens: usage.output_tokens ?? usage.completion_tokens ?? null,
+    inputTokens: isAnthropic ? (usage.input_tokens ?? null) : (usage.prompt_tokens ?? null),
+    outputTokens: isAnthropic ? (usage.output_tokens ?? null) : (usage.completion_tokens ?? null),
     cacheReadTokens: usage.cache_read_input_tokens ?? null,
     cacheCreationTokens: usage.cache_creation_input_tokens ?? null,
     costUsd: null,
@@ -119,22 +120,30 @@ function httpUsageFromJson(target, json) {
   };
 }
 
-/** Parse CLI JSON stdout. On parse failure return the raw string and log parseError. */
+function cliParseErrorEntry(target) {
+  return {
+    ts: new Date().toISOString(),
+    providerName: target.providerName,
+    model: target.model,
+    kind: 'cli',
+    parseError: true,
+  };
+}
+
+/** Parse CLI JSON stdout. On parse failure or missing `result`, log parseError. Always return a string. */
 function takeCliResult(target, out) {
   let parsed;
   try {
     parsed = JSON.parse(out);
   } catch {
-    recordUsage({
-      ts: new Date().toISOString(),
-      providerName: target.providerName,
-      model: target.model,
-      kind: 'cli',
-      parseError: true,
-    });
+    recordUsage(cliParseErrorEntry(target));
     return out;
   }
-  recordUsage(cliUsageFromParsed(target, parsed));
+  if (parsed.result === undefined) {
+    recordUsage(cliParseErrorEntry(target));
+  } else {
+    recordUsage(cliUsageFromParsed(target, parsed));
+  }
   return parsed.result ?? '';
 }
 
@@ -254,7 +263,7 @@ async function callHttp(target, system, user) {
   if (res.status === 429 || res.status >= 500) throw new Error(`http ${res.status}`);
   if (!res.ok) throw new Error(`http ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const json = await res.json();
-  recordUsage(httpUsageFromJson(target, json));
+  recordUsage(httpUsageFromJson(target, json, anthropic));
   return anthropic
     ? (json.content ?? []).map((b) => b.text || '').join('')
     : json.choices?.[0]?.message?.content ?? '';

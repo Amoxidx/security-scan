@@ -85,6 +85,22 @@ const badBin = join(work, 'fake-claude-bad.sh');
 writeFileSync(badBin, '#!/bin/sh\nprintf \'not-json{{{\'\n');
 chmodSync(badBin, 0o755);
 
+const CLAUDE_JSON_NO_RESULT = { ...CLAUDE_JSON };
+delete CLAUDE_JSON_NO_RESULT.result;
+const noResultBin = join(work, 'fake-claude-no-result.sh');
+writeFileSync(
+  noResultBin,
+  `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify(CLAUDE_JSON_NO_RESULT)}\nJSON\n`,
+);
+chmodSync(noResultBin, 0o755);
+
+const emptyResultBin = join(work, 'fake-claude-empty-result.sh');
+writeFileSync(
+  emptyResultBin,
+  `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify({ ...CLAUDE_JSON, result: '' })}\nJSON\n`,
+);
+chmodSync(emptyResultBin, 0o755);
+
 const plainBin = join(work, 'fake-kimi-plain.sh');
 const argsPlain = join(work, 'fake-kimi-plain.args');
 writeFileSync(
@@ -186,6 +202,70 @@ chmodSync(plainBin, 0o755);
 
 {
   m.resetUsageLog();
+  let threw = false;
+  let raw;
+  try {
+    raw = await m.complete(
+      { maxConcurrency: 1, providers: {} },
+      {
+        providerName: 'claude-cli',
+        model: 'claude-opus-5',
+        provider: { type: 'cli', command: [noResultBin, '-p'], jsonOutput: true, timeoutMs: 8000 },
+        spec: 'claude-cli:claude-opus-5',
+      },
+      'sys',
+      'user',
+    );
+  } catch (err) {
+    threw = true;
+    raw = err.message;
+  }
+  const logMissing = m.getUsageLog();
+  check(
+    'json without result returns empty string without throwing',
+    !threw && raw === '',
+    `threw=${threw} raw=${JSON.stringify(raw)}`,
+  );
+  check(
+    'json without result logs parseError without usage fields',
+    logMissing.length === 1
+      && logMissing[0].parseError === true
+      && !('inputTokens' in logMissing[0])
+      && !('outputTokens' in logMissing[0])
+      && !('costUsd' in logMissing[0]),
+    JSON.stringify(logMissing[0]),
+  );
+}
+
+{
+  m.resetUsageLog();
+  const empty = await m.complete(
+    { maxConcurrency: 1, providers: {} },
+    {
+      providerName: 'claude-cli',
+      model: 'claude-opus-5',
+      provider: { type: 'cli', command: [emptyResultBin, '-p'], jsonOutput: true, timeoutMs: 8000 },
+      spec: 'claude-cli:claude-opus-5',
+    },
+    'sys',
+    'user',
+  );
+  const logEmpty = m.getUsageLog();
+  const ee = logEmpty[0] || {};
+  check(
+    'json with empty result string is a legitimate answer',
+    empty === ''
+      && logEmpty.length === 1
+      && !ee.parseError
+      && ee.inputTokens === 9
+      && ee.outputTokens === 140
+      && ee.costUsd === 0.0764,
+    JSON.stringify({ empty, ee }),
+  );
+}
+
+{
+  m.resetUsageLog();
   const plain = await m.complete(
     { maxConcurrency: 1, providers: {} },
     {
@@ -269,6 +349,76 @@ chmodSync(plainBin, 0o755);
     'http without billed flag logs billed:false',
     httpFree === 'http-result' && hf.billed === false,
     JSON.stringify(hf),
+  );
+}
+
+{
+  async function httpCompleteOpenAi(json) {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      status: 200,
+      ok: true,
+      json: async () => json,
+    });
+    process.env.USAGE_HTTP_KEY = 'x';
+    try {
+      return await m.complete(
+        { maxConcurrency: 1, providers: {} },
+        {
+          providerName: 'zen',
+          model: 'gpt-x',
+          provider: {
+            type: 'openai',
+            baseUrl: 'http://127.0.0.1:9',
+            apiKeyEnv: 'USAGE_HTTP_KEY',
+            billed: true,
+          },
+          spec: 'zen:gpt-x',
+        },
+        'sys',
+        'user',
+      );
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  m.resetUsageLog();
+  const openaiGot = await httpCompleteOpenAi({
+    choices: [{ message: { content: 'openai-result' } }],
+    usage: {
+      input_tokens: 99,
+      output_tokens: 88,
+      prompt_tokens: 5,
+      completion_tokens: 7,
+    },
+  });
+  const oa = m.getUsageLog()[0] || {};
+  check(
+    'openai http reads prompt_tokens not a decoy input_tokens',
+    openaiGot === 'openai-result'
+      && m.getUsageLog().length === 1
+      && oa.kind === 'http'
+      && oa.inputTokens === 5
+      && oa.outputTokens === 7
+      && oa.inputTokens !== 99
+      && oa.outputTokens !== 88,
+    JSON.stringify({ openaiGot, oa }),
+  );
+
+  m.resetUsageLog();
+  const decoyOnly = await httpCompleteOpenAi({
+    choices: [{ message: { content: 'openai-decoy' } }],
+    usage: { input_tokens: 99 },
+  });
+  const od = m.getUsageLog()[0] || {};
+  check(
+    'openai http ignores a lone anthropic input_tokens field',
+    decoyOnly === 'openai-decoy'
+      && m.getUsageLog().length === 1
+      && od.inputTokens === null
+      && od.outputTokens === null,
+    JSON.stringify({ decoyOnly, od }),
   );
 }
 
