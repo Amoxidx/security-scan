@@ -16,17 +16,23 @@
 #   CLAUDE_BIN                 real claude binary (default: first real binary on PATH)
 #   SECURITY_CLAUDE_GUI_FORCE  1 = always use GUI domain (even if direct auth works)
 #   SECURITY_CLAUDE_GUI_TIMEOUT_S  wall clock for one GUI job (default: 300)
-#   SECURITY_CLAUDE_GUI_RETRIES    extra run_via_gui attempts after empty-stderr
-#                                  exit != 0 (default: 2; set 0 to disable)
+#   SECURITY_CLAUDE_GUI_RETRIES    extra run_via_gui attempts after an
+#                                  empty-stdout AND empty-stderr exit != 0
+#                                  (default: 2; set 0 to disable)
 #   SECURITY_CLAUDE_GUI_CACHE      override marker/work cache
 #                                  (default: ~/.cache/security-claude-gui)
 #   SECURITY_CLAUDE_GUI_FAILURE_MAX_AGE_S
 #                                  --studio-auth-check mentions last-failure.json
 #                                  younger than this (default: 3600)
 #
+# last-failure.json reflects the most recent event across ALL concurrent
+# invocations of this script, not just this process — a concurrent success
+# can clear a failure written moments earlier by another instance.
+#
 # Exit: passes through claude's exit code; 3 = setup error (no binary / no GUI session).
 
 set -euo pipefail
+umask 077
 
 SELF_NAME="$(basename "$0")"
 CACHE_ROOT="${SECURITY_CLAUDE_GUI_CACHE:-${HOME:-/tmp}/.cache/security-claude-gui}"
@@ -62,20 +68,30 @@ sanitize_text() {
   local s lowered
   s="$(printf '%s' "${1:-}" | tr '\n\r\t' '   ' | tr -d '\000-\037\177')"
   lowered="$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')"
-  if printf '%s' "$lowered" | grep -qE 'bearer [a-z0-9._~+/=-]+|authorization:[[:space:]]*bearer |sk-[a-z0-9]{8,}|api[_-]?key[=:]|refresh_token[=:]|access_token[=:]'; then
+  # JWT on the original (eyJ is case-sensitive). Other heuristics after lowercasing
+  # so camelCase keys (accessToken, apiKey, sessionToken) match the snake_case forms.
+  if printf '%s' "$s" | grep -qE 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+' \
+      || printf '%s' "$lowered" | grep -qE 'bearer [a-z0-9._~+/=-]+|authorization:[[:space:]]*bearer |sk-[a-z0-9-]{8,}|"?[a-z_]*api[_-]?key"?[[:space:]]*[=:]|"?[a-z_]*(access|refresh)[_-]?token"?[[:space:]]*[=:]|"?[a-z_]*session[_-]?token"?[[:space:]]*[=:]|"?[a-z_]*(token|password|secret)"?[[:space:]]*[=:]'; then
     s='[redacted]'
   fi
   printf '%s' "$s" | tr -d '\\"' | cut -c1-400
 }
 
 write_failure_marker() {
-  local stage="$1" message="$2" ts
+  local stage="$1" message="$2" ts tmp
   mkdir -p "$CACHE_ROOT" 2>/dev/null || return 0
+  chmod 700 "$CACHE_ROOT" 2>/dev/null || true
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   stage="$(sanitize_text "$stage")"
   message="$(sanitize_text "$message")"
-  printf '{"ts":"%s","stage":"%s","message":"%s"}\n' "$ts" "$stage" "$message" \
-    > "$FAILURE_MARKER" 2>/dev/null || true
+  tmp="$(mktemp "${CACHE_ROOT}/.last-failure.XXXXXX" 2>/dev/null)" || return 0
+  if ! printf '{"ts":"%s","stage":"%s","message":"%s"}\n' "$ts" "$stage" "$message" \
+      > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 0
+  fi
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$FAILURE_MARKER" 2>/dev/null || { rm -f "$tmp"; return 0; }
 }
 
 clear_failure_marker() {
@@ -216,6 +232,7 @@ gui_auth_ok() {
   fi
 
   mkdir -p "$CACHE_ROOT"
+  chmod 700 "$CACHE_ROOT" 2>/dev/null || true
   work="$(mktemp -d "${CACHE_ROOT}/auth-XXXXXX")"
   label="com.amoxidx.claude-auth.$$.$RANDOM"
   runner="${work}/run.sh"
@@ -340,8 +357,9 @@ run_via_gui() {
   command -v launchctl >/dev/null 2>&1 || die "launchctl not available"
   launchctl print "gui/${uidn}" >/dev/null 2>&1 || die "no active GUI session for uid ${uidn} (log into the Mac desktop once)"
 
-  mkdir -p "$CACHE_ROOT"
-  work="$(mktemp -d "${CACHE_ROOT}/run-XXXXXX")"
+  mkdir -p "$CACHE_ROOT" 2>/dev/null || die "cache dir ${CACHE_ROOT} not writable"
+  chmod 700 "$CACHE_ROOT" 2>/dev/null || true
+  work="$(mktemp -d "${CACHE_ROOT}/run-XXXXXX" 2>/dev/null)" || die "mktemp -d failed in ${CACHE_ROOT}"
   runner="${work}/run.sh"
 
   # Persist argv (one line per arg; empty args not used by claude -p).
@@ -445,8 +463,9 @@ run_direct() {
   shift
   local errf rc=0 err_txt
   FAIL_STAGE="run_direct"
-  mkdir -p "$CACHE_ROOT"
-  errf="$(mktemp "${CACHE_ROOT}/direct-err-XXXXXX")"
+  mkdir -p "$CACHE_ROOT" 2>/dev/null || die "cache dir ${CACHE_ROOT} not writable"
+  chmod 700 "$CACHE_ROOT" 2>/dev/null || true
+  errf="$(mktemp "${CACHE_ROOT}/direct-err-XXXXXX" 2>/dev/null)" || die "mktemp failed in ${CACHE_ROOT}"
   "$bin" "$@" 2>"$errf" || rc=$?
   if [ "$rc" -eq 0 ]; then
     if [ -s "$errf" ]; then
@@ -466,7 +485,7 @@ emit_auth_check_success() {
   local how="$1" note
   note="$(recent_failure_note || true)"
   if [ -n "$note" ]; then
-    echo "claude-via-gui: auth ok (${how}), aber ${note}"
+    echo "claude-via-gui: auth ok (${how}), but ${note}"
   else
     echo "claude-via-gui: auth ok (${how})"
   fi
@@ -488,22 +507,22 @@ if [ "${1:-}" = "--studio-auth-check" ]; then
   fi
   echo "claude-via-gui: auth unavailable (direct and GUI probe failed — run: claude auth login on the Studio desktop)" >&2
   # Name both stages so an empty probe no longer yields "exited 1:".
-  local_direct="${DIRECT_AUTH_ERR:-}"
-  if [ -z "$local_direct" ]; then
+  direct_msg="${DIRECT_AUTH_ERR:-}"
+  if [ -z "$direct_msg" ]; then
     if [ -n "${DIRECT_AUTH_CODE:-}" ] && [ "${DIRECT_AUTH_CODE}" != "0" ]; then
-      local_direct="$(empty_stderr_hint "${DIRECT_AUTH_CODE}")"
+      direct_msg="$(empty_stderr_hint "${DIRECT_AUTH_CODE}")"
     else
-      local_direct="loggedIn is not true"
+      direct_msg="loggedIn is not true"
     fi
   fi
-  echo "claude-via-gui: direct_auth_ok failed: exit ${DIRECT_AUTH_CODE:-unknown}: ${local_direct}" >&2
-  local_gui="${GUI_AUTH_ERR:-}"
-  if [ -z "$local_gui" ]; then
-    local_gui="${GUI_AUTH_REASON:-$(empty_stderr_hint "${GUI_AUTH_CODE:-1}")}"
+  echo "claude-via-gui: direct_auth_ok failed: exit ${DIRECT_AUTH_CODE:-unknown}: ${direct_msg}" >&2
+  gui_msg="${GUI_AUTH_ERR:-}"
+  if [ -z "$gui_msg" ]; then
+    gui_msg="${GUI_AUTH_REASON:-$(empty_stderr_hint "${GUI_AUTH_CODE:-1}")}"
   elif [ -n "$GUI_AUTH_REASON" ]; then
-    local_gui="${GUI_AUTH_REASON}: ${local_gui}"
+    gui_msg="${GUI_AUTH_REASON}: ${gui_msg}"
   fi
-  echo "claude-via-gui: gui_auth_ok failed: exit ${GUI_AUTH_CODE:-unknown}: ${local_gui}" >&2
+  echo "claude-via-gui: gui_auth_ok failed: exit ${GUI_AUTH_CODE:-unknown}: ${gui_msg}" >&2
   write_failure_marker "gui_auth_ok" "auth unavailable; direct_auth_ok exit ${DIRECT_AUTH_CODE:-unknown}; gui_auth_ok ${GUI_AUTH_REASON:-exit ${GUI_AUTH_CODE:-unknown}}"
   exit 1
 fi
