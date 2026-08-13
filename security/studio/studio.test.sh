@@ -532,6 +532,25 @@ EOF
   fi
 }
 
+echo "=== complete() usage log (cli jsonOutput + http) ==="
+{
+  run node "$ROOT/security/redteam/providers.test.mjs"
+  printf '%s\n' "$RUN_OUT"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "providers.test.mjs usage log" 1
+  else
+    case_result "providers.test.mjs usage log" 0 "$(short "$RUN_OUT")"
+  fi
+
+  # Three child-stage env objects must pass the file-bridge path.
+  BRIDGE="$(grep -c 'SECURITY_USAGE_LOG_FILE: usageLogFile(outDir)' "$CHECK_PR" || true)"
+  if [ "$BRIDGE" = "3" ]; then
+    case_result "check-pr passes SECURITY_USAGE_LOG_FILE to 3 child stages" 1
+  else
+    case_result "check-pr passes SECURITY_USAGE_LOG_FILE to 3 child stages" 0 "count=$BRIDGE"
+  fi
+}
+
 echo "=== resolveDockerBin ==="
 {
   cat > "$WORK/docker-resolve.mjs" <<'EOF'
@@ -591,6 +610,16 @@ echo "=== check-pr.mjs --local --skip-ai on this repo ==="
     case_result "local --skip-ai orchestrator runs" 0 "setup error: $(short "$RUN_OUT")"
   elif [ -f "$OUT/report.md" ] && [ -f "$OUT/gate.json" ] && [ -f "$OUT/subject.json" ]; then
     case_result "local --skip-ai orchestrator runs" 1
+    if [ -f "$OUT/usage.json" ] && grep -q '"calls": \[\]' "$OUT/usage.json"; then
+      case_result "skip-ai writes empty usage.json" 1
+    else
+      case_result "skip-ai writes empty usage.json" 0 "usage.json missing or calls not empty"
+    fi
+    if grep -q '### Model usage' "$OUT/report.md"; then
+      case_result "skip-ai omits Model usage section" 0 "section present"
+    else
+      case_result "skip-ai omits Model usage section" 1
+    fi
   else
     case_result "local --skip-ai orchestrator runs" 0 "rc=$RUN_RC missing artifacts; $(short "$RUN_OUT")"
   fi

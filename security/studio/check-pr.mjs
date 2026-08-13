@@ -44,6 +44,7 @@ import {
 } from './targets.mjs';
 import { resolveDockerBin } from '../lab/sandbox.mjs';
 import { resolveLabModelSpec } from './lab-model.mjs';
+import { getUsageLog, resetUsageLog } from '../redteam/providers.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../..');
@@ -531,7 +532,7 @@ function stageTriage(subject, outDir, findingsPath) {
   const out = join(outDir, 'triaged.json');
   const r = run('node', [TRIAGE, '--findings', findingsPath, '--repo', subject.workdir, '--out', out], {
     cwd: subject.workdir,
-    env: stageEnv(),
+    env: { ...stageEnv(), SECURITY_USAGE_LOG_FILE: usageLogFile(outDir) },
     timeoutMs: 600_000,
   });
   writeFileSync(join(outDir, 'triage.log'), `${r.stdout}\n${r.stderr}`);
@@ -556,7 +557,7 @@ function stageHarness(subject, outDir, diffPath) {
   mkdirSync(harnessOut, { recursive: true });
   const r = run('node', [HARNESS, '--diff', diffPath, '--out', harnessOut, '--config', CONFIG], {
     cwd: subject.workdir,
-    env: stageEnv(),
+    env: { ...stageEnv(), SECURITY_USAGE_LOG_FILE: usageLogFile(outDir) },
     timeoutMs: 900_000,
   });
   writeFileSync(join(outDir, 'harness.log'), `${r.stdout}\n${r.stderr}`);
@@ -633,7 +634,7 @@ function stageLab(subject, outDir, candidates, diffPath, config) {
 
     const r = run('node', labArgs, {
       cwd: subject.workdir,
-      env: stageEnv(),
+      env: { ...stageEnv(), SECURITY_USAGE_LOG_FILE: usageLogFile(outDir) },
       timeoutMs: Math.max(400_000, (timeoutS + 60) * 1000),
     });
     writeFileSync(join(runOut, 'lab-runner.log'), `${r.stdout}\n${r.stderr}`);
@@ -770,7 +771,127 @@ function labVerdict(finding, labByKey) {
   return null;
 }
 
-function buildReport(subject, stages, gate) {
+function usageLogFile(outDir) {
+  return join(outDir, '.usage.jsonl');
+}
+
+function readUsageJsonl(path) {
+  if (!existsSync(path)) return [];
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      out.push(JSON.parse(trimmed));
+    } catch {
+      // skip a corrupt/partial line from a killed child
+    }
+  }
+  return out;
+}
+
+/** File is the child-process source; in-memory is the fallback if this process called complete(). */
+function collectUsageCalls(outDir) {
+  const fromFile = readUsageJsonl(usageLogFile(outDir));
+  const fromMem = getUsageLog();
+  const seen = new Set();
+  const calls = [];
+  for (const e of [...fromFile, ...fromMem]) {
+    const key = JSON.stringify(e);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    calls.push(e);
+  }
+  return calls;
+}
+
+function addToken(sum, value) {
+  return sum + (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+}
+
+/** Totals for usage.json: per-kind token sums; costUsd only over entries that have one. */
+function summarizeUsage(calls) {
+  const byKind = {};
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
+  let costUsd = 0;
+  let costSeen = false;
+
+  for (const c of calls) {
+    const kind = c.kind || 'unknown';
+    if (!byKind[kind]) {
+      byKind[kind] = {
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costUsd: null,
+        _costSum: 0,
+        _costSeen: false,
+      };
+    }
+    const bucket = byKind[kind];
+    bucket.calls += 1;
+    bucket.inputTokens = addToken(bucket.inputTokens, c.inputTokens);
+    bucket.outputTokens = addToken(bucket.outputTokens, c.outputTokens);
+    bucket.cacheReadTokens = addToken(bucket.cacheReadTokens, c.cacheReadTokens);
+    bucket.cacheCreationTokens = addToken(bucket.cacheCreationTokens, c.cacheCreationTokens);
+    if (c.costUsd != null) {
+      bucket._costSum += c.costUsd;
+      bucket._costSeen = true;
+      costUsd += c.costUsd;
+      costSeen = true;
+    }
+    inputTokens = addToken(inputTokens, c.inputTokens);
+    outputTokens = addToken(outputTokens, c.outputTokens);
+    cacheReadTokens = addToken(cacheReadTokens, c.cacheReadTokens);
+    cacheCreationTokens = addToken(cacheCreationTokens, c.cacheCreationTokens);
+  }
+
+  for (const bucket of Object.values(byKind)) {
+    bucket.costUsd = bucket._costSeen ? bucket._costSum : null;
+    delete bucket._costSum;
+    delete bucket._costSeen;
+  }
+
+  return {
+    calls,
+    totals: {
+      calls: calls.length,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      costUsd: costSeen ? costUsd : null,
+      byKind,
+    },
+  };
+}
+
+function usageReportLines(usage) {
+  if (!usage?.calls?.length) return [];
+  const t = usage.totals;
+  const cost = t.costUsd != null
+    ? ` · ~$${t.costUsd} (subscription CLI estimate, not billed)`
+    : '';
+  return [
+    '### Model usage',
+    `${t.calls} call(s) · ${t.inputTokens} input / ${t.outputTokens} output tokens` +
+      ` (+ ${t.cacheReadTokens} cache-read)${cost} — siehe usage.json`,
+    '',
+  ];
+}
+
+function buildReport(subject, stages, gate, usage) {
   const head = String(subject.headSha || '').slice(0, 8);
   let scopeLine;
   if (subject.mode === 'pr') {
@@ -807,6 +928,7 @@ function buildReport(subject, stages, gate) {
       ? `${(stages.lab.reproduced || []).length} reproduced / ${(stages.lab.results || []).length} run`
       : 'skipped'),
     '',
+    ...usageReportLines(usage),
   ];
 
   if (gate.reasons.length) {
@@ -921,6 +1043,7 @@ async function main() {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const outDir = resolve(args.out || join(process.cwd(), 'security-report', `studio-${ts}`));
   mkdirSync(outDir, { recursive: true });
+  resetUsageLog();
 
   console.log(`\x1b[1msecurity-scan · Studio check\x1b[0m`);
   console.log(`target: ${target.id} (${target.label || ''})`);
@@ -1003,7 +1126,10 @@ async function main() {
       config,
     });
 
-    const report = buildReport(subject, stages, gate);
+    // .usage.jsonl is kept as a hidden internal artifact (child-process writes).
+    const usage = summarizeUsage(collectUsageCalls(outDir));
+    writeFileSync(join(outDir, 'usage.json'), JSON.stringify(usage, null, 2));
+    const report = buildReport(subject, stages, gate, usage);
     writeFileSync(join(outDir, 'report.md'), report);
     writeFileSync(join(outDir, 'gate.json'), JSON.stringify(gate, null, 2));
     console.log(`\n${report.split('\n').slice(0, 45).join('\n')}`);

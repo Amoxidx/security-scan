@@ -22,6 +22,7 @@
         "-p"
       ],
       "modelFlag": "--model",
+      "jsonOutput": true,
       "timeoutMs": 300000
     },
     "opencode-cli": {
@@ -50,18 +51,21 @@
       "type": "anthropic",
       "$comment": "Moonshot's Anthropic-compatible adapter. Metered, but no gateway in between.",
       "baseUrl": "https://api.moonshot.ai/anthropic",
-      "apiKeyEnv": "MOONSHOT_API_KEY"
+      "apiKeyEnv": "MOONSHOT_API_KEY",
+      "billed": true
     },
     "anthropic": {
       "type": "anthropic",
       "baseUrl": "https://api.anthropic.com",
-      "apiKeyEnv": "ANTHROPIC_API_KEY"
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "billed": true
     },
     "zen": {
       "type": "openai",
       "$comment": "OpenCode Zen \u2014 the Red Team's own setup: one key, many models, pay-per-use.",
       "baseUrl": "https://opencode.ai/zen/v1",
-      "apiKeyEnv": "SECURITY_AI_API_KEY"
+      "apiKeyEnv": "SECURITY_AI_API_KEY",
+      "billed": true
     },
     "ollama": {
       "type": "openai",

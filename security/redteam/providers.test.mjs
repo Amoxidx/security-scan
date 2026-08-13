@@ -1,0 +1,557 @@
+#!/usr/bin/env node
+/**
+ * Unit checks for complete() usage logging in providers.mjs.
+ * Fake CLI binaries + mocked fetch; no live models or network.
+ *
+ * Exit: 0 all passed, 1 one or more failed.
+ */
+import { writeFileSync, chmodSync, readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PROVIDERS = join(HERE, 'providers.mjs');
+const CONFIG = join(HERE, 'config.json');
+
+const CLAUDE_JSON = {
+  is_error: false,
+  total_cost_usd: 0.0764,
+  usage: {
+    input_tokens: 9,
+    cache_creation_input_tokens: 36638,
+    cache_read_input_tokens: 18100,
+    output_tokens: 140,
+  },
+  modelUsage: {
+    'claude-haiku-4-5-20251001': {
+      inputTokens: 532,
+      outputTokens: 153,
+      cacheReadInputTokens: 18100,
+      cacheCreationInputTokens: 36638,
+      costUSD: 0.0764,
+    },
+  },
+  result: 'Hey Joshua, hi!',
+  type: 'result',
+};
+
+const work = mkdtempSync(join(tmpdir(), 'providers-usage.'));
+const m = await import(pathToFileURL(PROVIDERS).href);
+
+let pass = 0;
+let fail = 0;
+
+function check(name, ok, detail = '') {
+  if (ok) {
+    pass += 1;
+    console.log(`  PASS  ${name}`);
+  } else {
+    fail += 1;
+    console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
+  }
+}
+
+{
+  const cfg = JSON.parse(readFileSync(CONFIG, 'utf8'));
+  const leaked = Object.entries(cfg.providers)
+    .filter(([name, p]) => name !== 'claude-cli' && p.jsonOutput);
+  check(
+    'config jsonOutput only on claude-cli',
+    cfg.providers['claude-cli']?.jsonOutput === true && leaked.length === 0,
+    leaked.length ? `leaked=${leaked.map(([n]) => n).join(',')}` : '',
+  );
+  const billed = Object.entries(cfg.providers)
+    .filter(([, p]) => p.billed === true)
+    .map(([name]) => name)
+    .sort();
+  check(
+    'config billed only on moonshot/anthropic/zen',
+    billed.join(',') === 'anthropic,moonshot,zen' && cfg.providers.ollama?.billed !== true,
+    billed.join(','),
+  );
+}
+
+const jsonBin = join(work, 'fake-claude-json.sh');
+const argsJson = join(work, 'fake-claude-json.args');
+writeFileSync(
+  jsonBin,
+  `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsJson}"\ncat <<'JSON'\n${JSON.stringify(CLAUDE_JSON)}\nJSON\n`,
+);
+chmodSync(jsonBin, 0o755);
+
+const badBin = join(work, 'fake-claude-bad.sh');
+writeFileSync(badBin, '#!/bin/sh\nprintf \'not-json{{{\'\n');
+chmodSync(badBin, 0o755);
+
+const CLAUDE_JSON_NO_RESULT = { ...CLAUDE_JSON };
+delete CLAUDE_JSON_NO_RESULT.result;
+const noResultBin = join(work, 'fake-claude-no-result.sh');
+writeFileSync(
+  noResultBin,
+  `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify(CLAUDE_JSON_NO_RESULT)}\nJSON\n`,
+);
+chmodSync(noResultBin, 0o755);
+
+const emptyResultBin = join(work, 'fake-claude-empty-result.sh');
+writeFileSync(
+  emptyResultBin,
+  `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify({ ...CLAUDE_JSON, result: '' })}\nJSON\n`,
+);
+chmodSync(emptyResultBin, 0o755);
+
+const plainBin = join(work, 'fake-kimi-plain.sh');
+const argsPlain = join(work, 'fake-kimi-plain.args');
+writeFileSync(
+  plainBin,
+  `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsPlain}"\nprintf 'plain-kimi-out\\n'\n`,
+);
+chmodSync(plainBin, 0o755);
+
+{
+  m.resetUsageLog();
+  const got = await m.complete(
+    { maxConcurrency: 1, providers: {} },
+    {
+      providerName: 'claude-cli',
+      model: 'claude-opus-5',
+      provider: {
+        type: 'cli',
+        command: [jsonBin, '-p'],
+        modelFlag: '--model',
+        jsonOutput: true,
+        timeoutMs: 8000,
+      },
+      spec: 'claude-cli:claude-opus-5',
+    },
+    'sys',
+    'user',
+  );
+  const log1 = m.getUsageLog();
+  const e = log1[0] || {};
+  const argvJson = readFileSync(argsJson, 'utf8').trim().split('\n');
+  check(
+    'jsonOutput returns only result string',
+    got === 'Hey Joshua, hi!',
+    `got=${JSON.stringify(got)}`,
+  );
+  check(
+    'jsonOutput logs one usage entry with token fields',
+    log1.length === 1
+      && e.providerName === 'claude-cli'
+      && e.model === 'claude-opus-5'
+      && e.kind === 'cli'
+      && e.inputTokens === 9
+      && e.outputTokens === 140
+      && e.cacheReadTokens === 18100
+      && e.cacheCreationTokens === 36638
+      && e.costUsd === 0.0764
+      && e.billed === false
+      && !e.parseError,
+    JSON.stringify(e),
+  );
+  check(
+    'jsonOutput passes --output-format json',
+    argvJson.includes('--output-format') && argvJson.includes('json'),
+    argvJson.join(' '),
+  );
+  log1.push({ injected: true });
+  check(
+    'getUsageLog returns a copy',
+    !m.getUsageLog().some((x) => x.injected),
+  );
+}
+
+{
+  m.resetUsageLog();
+  let threw = false;
+  let raw;
+  try {
+    raw = await m.complete(
+      { maxConcurrency: 1, providers: {} },
+      {
+        providerName: 'claude-cli',
+        model: 'claude-opus-5',
+        provider: { type: 'cli', command: [badBin, '-p'], jsonOutput: true, timeoutMs: 8000 },
+        spec: 'claude-cli:claude-opus-5',
+      },
+      'sys',
+      'user',
+    );
+  } catch (err) {
+    threw = true;
+    raw = err.message;
+  }
+  const log2 = m.getUsageLog();
+  check(
+    'bad json does not throw and returns raw stdout',
+    !threw && raw === 'not-json{{{',
+    `threw=${threw} raw=${JSON.stringify(raw)}`,
+  );
+  check(
+    'bad json logs parseError without usage fields',
+    log2.length === 1
+      && log2[0].parseError === true
+      && !('inputTokens' in log2[0])
+      && !('outputTokens' in log2[0])
+      && !('costUsd' in log2[0]),
+    JSON.stringify(log2[0]),
+  );
+}
+
+{
+  m.resetUsageLog();
+  let threw = false;
+  let raw;
+  try {
+    raw = await m.complete(
+      { maxConcurrency: 1, providers: {} },
+      {
+        providerName: 'claude-cli',
+        model: 'claude-opus-5',
+        provider: { type: 'cli', command: [noResultBin, '-p'], jsonOutput: true, timeoutMs: 8000 },
+        spec: 'claude-cli:claude-opus-5',
+      },
+      'sys',
+      'user',
+    );
+  } catch (err) {
+    threw = true;
+    raw = err.message;
+  }
+  const logMissing = m.getUsageLog();
+  check(
+    'json without result returns empty string without throwing',
+    !threw && raw === '',
+    `threw=${threw} raw=${JSON.stringify(raw)}`,
+  );
+  check(
+    'json without result logs parseError without usage fields',
+    logMissing.length === 1
+      && logMissing[0].parseError === true
+      && !('inputTokens' in logMissing[0])
+      && !('outputTokens' in logMissing[0])
+      && !('costUsd' in logMissing[0]),
+    JSON.stringify(logMissing[0]),
+  );
+}
+
+{
+  m.resetUsageLog();
+  const empty = await m.complete(
+    { maxConcurrency: 1, providers: {} },
+    {
+      providerName: 'claude-cli',
+      model: 'claude-opus-5',
+      provider: { type: 'cli', command: [emptyResultBin, '-p'], jsonOutput: true, timeoutMs: 8000 },
+      spec: 'claude-cli:claude-opus-5',
+    },
+    'sys',
+    'user',
+  );
+  const logEmpty = m.getUsageLog();
+  const ee = logEmpty[0] || {};
+  check(
+    'json with empty result string is a legitimate answer',
+    empty === ''
+      && logEmpty.length === 1
+      && !ee.parseError
+      && ee.inputTokens === 9
+      && ee.outputTokens === 140
+      && ee.costUsd === 0.0764,
+    JSON.stringify({ empty, ee }),
+  );
+}
+
+{
+  m.resetUsageLog();
+  const plain = await m.complete(
+    { maxConcurrency: 1, providers: {} },
+    {
+      providerName: 'kimi-cli',
+      model: 'kimi-k3',
+      provider: {
+        type: 'cli',
+        command: [plainBin, '-p'],
+        modelFlag: '--model',
+        timeoutMs: 8000,
+      },
+      spec: 'kimi-cli:kimi-k3',
+    },
+    'sys',
+    'user',
+  );
+  const argvPlain = readFileSync(argsPlain, 'utf8');
+  check(
+    'without jsonOutput returns raw stdout and logs nothing',
+    plain === 'plain-kimi-out\n'
+      && m.getUsageLog().length === 0
+      && !argvPlain.includes('--output-format'),
+    `out=${JSON.stringify(plain)} log=${m.getUsageLog().length} argv=${argvPlain.trim()}`,
+  );
+}
+
+{
+  async function httpComplete(providerExtra) {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        content: [{ text: 'http-result' }],
+        usage: { input_tokens: 11, output_tokens: 22, cache_read_input_tokens: 3 },
+      }),
+    });
+    process.env.USAGE_HTTP_KEY = 'x';
+    try {
+      return await m.complete(
+        { maxConcurrency: 1, providers: {} },
+        {
+          providerName: 'moonshot',
+          model: 'kimi-k2',
+          provider: {
+            type: 'anthropic',
+            baseUrl: 'http://127.0.0.1:9',
+            apiKeyEnv: 'USAGE_HTTP_KEY',
+            ...providerExtra,
+          },
+          spec: 'moonshot:kimi-k2',
+        },
+        'sys',
+        'user',
+      );
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  m.resetUsageLog();
+  const httpBilled = await httpComplete({ billed: true });
+  const hb = m.getUsageLog()[0] || {};
+  check(
+    'http with billed:true logs billed tokens without costUsd',
+    httpBilled === 'http-result'
+      && m.getUsageLog().length === 1
+      && hb.kind === 'http'
+      && hb.billed === true
+      && hb.inputTokens === 11
+      && hb.outputTokens === 22
+      && hb.cacheReadTokens === 3
+      && hb.costUsd === null,
+    JSON.stringify({ httpBilled, hb }),
+  );
+
+  m.resetUsageLog();
+  const httpFree = await httpComplete({});
+  const hf = m.getUsageLog()[0] || {};
+  check(
+    'http without billed flag logs billed:false',
+    httpFree === 'http-result' && hf.billed === false,
+    JSON.stringify(hf),
+  );
+}
+
+{
+  async function httpCompleteOpenAi(json) {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      status: 200,
+      ok: true,
+      json: async () => json,
+    });
+    process.env.USAGE_HTTP_KEY = 'x';
+    try {
+      return await m.complete(
+        { maxConcurrency: 1, providers: {} },
+        {
+          providerName: 'zen',
+          model: 'gpt-x',
+          provider: {
+            type: 'openai',
+            baseUrl: 'http://127.0.0.1:9',
+            apiKeyEnv: 'USAGE_HTTP_KEY',
+            billed: true,
+          },
+          spec: 'zen:gpt-x',
+        },
+        'sys',
+        'user',
+      );
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  m.resetUsageLog();
+  const openaiGot = await httpCompleteOpenAi({
+    choices: [{ message: { content: 'openai-result' } }],
+    usage: {
+      input_tokens: 99,
+      output_tokens: 88,
+      prompt_tokens: 5,
+      completion_tokens: 7,
+    },
+  });
+  const oa = m.getUsageLog()[0] || {};
+  check(
+    'openai http reads prompt_tokens not a decoy input_tokens',
+    openaiGot === 'openai-result'
+      && m.getUsageLog().length === 1
+      && oa.kind === 'http'
+      && oa.inputTokens === 5
+      && oa.outputTokens === 7
+      && oa.inputTokens !== 99
+      && oa.outputTokens !== 88,
+    JSON.stringify({ openaiGot, oa }),
+  );
+
+  m.resetUsageLog();
+  const decoyOnly = await httpCompleteOpenAi({
+    choices: [{ message: { content: 'openai-decoy' } }],
+    usage: { input_tokens: 99 },
+  });
+  const od = m.getUsageLog()[0] || {};
+  check(
+    'openai http ignores a lone anthropic input_tokens field',
+    decoyOnly === 'openai-decoy'
+      && m.getUsageLog().length === 1
+      && od.inputTokens === null
+      && od.outputTokens === null,
+    JSON.stringify({ decoyOnly, od }),
+  );
+}
+
+{
+  m.resetUsageLog();
+  const logFile = join(work, 'usage.jsonl');
+  process.env.SECURITY_USAGE_LOG_FILE = logFile;
+  try {
+    await m.complete(
+      { maxConcurrency: 1, providers: {} },
+      {
+        providerName: 'claude-cli',
+        model: 'claude-opus-5',
+        provider: {
+          type: 'cli',
+          command: [jsonBin, '-p'],
+          modelFlag: '--model',
+          jsonOutput: true,
+          timeoutMs: 8000,
+        },
+        spec: 'claude-cli:claude-opus-5',
+      },
+      'sys',
+      'user',
+    );
+    const raw = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+    const lines = raw.split('\n').filter((l) => l.trim());
+    let parsed = null;
+    try { parsed = JSON.parse(lines[0] || ''); } catch { parsed = null; }
+    check(
+      'SECURITY_USAGE_LOG_FILE gets one jsonl line matching memory',
+      lines.length === 1
+        && parsed
+        && parsed.inputTokens === 9
+        && parsed.costUsd === 0.0764
+        && parsed.billed === false
+        && m.getUsageLog().length === 1,
+      `lines=${lines.length} parsed=${JSON.stringify(parsed)}`,
+    );
+  } finally {
+    delete process.env.SECURITY_USAGE_LOG_FILE;
+  }
+}
+
+{
+  m.resetUsageLog();
+  process.env.SECURITY_USAGE_LOG_FILE = join(work, 'no-such-dir', 'usage.jsonl');
+  let threw = false;
+  try {
+    await m.complete(
+      { maxConcurrency: 1, providers: {} },
+      {
+        providerName: 'claude-cli',
+        model: 'claude-opus-5',
+        provider: {
+          type: 'cli',
+          command: [jsonBin, '-p'],
+          jsonOutput: true,
+          timeoutMs: 8000,
+        },
+        spec: 'claude-cli:claude-opus-5',
+      },
+      'sys',
+      'user',
+    );
+  } catch {
+    threw = true;
+  } finally {
+    delete process.env.SECURITY_USAGE_LOG_FILE;
+  }
+  check(
+    'unwritable SECURITY_USAGE_LOG_FILE does not throw',
+    !threw && m.getUsageLog().length === 1,
+    `threw=${threw} log=${m.getUsageLog().length}`,
+  );
+}
+
+{
+  const childLog = join(work, 'child-usage.jsonl');
+  const childScript = join(work, 'child-complete.mjs');
+  writeFileSync(
+    childScript,
+    `import { complete } from ${JSON.stringify(pathToFileURL(PROVIDERS).href)};
+const got = await complete(
+  { maxConcurrency: 1, providers: {} },
+  {
+    providerName: 'claude-cli',
+    model: 'claude-opus-5',
+    provider: {
+      type: 'cli',
+      command: [${JSON.stringify(jsonBin)}, '-p'],
+      jsonOutput: true,
+      timeoutMs: 8000,
+    },
+    spec: 'claude-cli:claude-opus-5',
+  },
+  'sys',
+  'user',
+);
+if (got !== 'Hey Joshua, hi!') {
+  console.error('child result', JSON.stringify(got));
+  process.exit(2);
+}
+`,
+  );
+  m.resetUsageLog();
+  const child = spawnSync(process.execPath, [childScript], {
+    encoding: 'utf8',
+    env: { ...process.env, SECURITY_USAGE_LOG_FILE: childLog },
+  });
+  const parentLog = m.getUsageLog();
+  const raw = existsSync(childLog) ? readFileSync(childLog, 'utf8') : '';
+  const lines = raw.split('\n').filter((l) => l.trim());
+  let parsed = null;
+  try { parsed = JSON.parse(lines[0] || ''); } catch { parsed = null; }
+  check(
+    'child process fills jsonl while parent memory stays empty',
+    child.status === 0
+      && parentLog.length === 0
+      && lines.length === 1
+      && parsed
+      && parsed.inputTokens === 9
+      && parsed.outputTokens === 140,
+    `status=${child.status} stderr=${(child.stderr || '').slice(0, 200)} parent=${parentLog.length} lines=${lines.length}`,
+  );
+}
+
+{
+  m.resetUsageLog();
+  check('resetUsageLog clears the array', m.getUsageLog().length === 0);
+}
+
+rmSync(work, { recursive: true, force: true });
+
+console.log(`${pass}/${pass + fail} providers usage cases`);
+process.exit(fail === 0 ? 0 : 1);
