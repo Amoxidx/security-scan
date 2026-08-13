@@ -113,6 +113,186 @@ echo "=== claude-via-gui.sh present + syntax ==="
   fi
 }
 
+echo "=== claude-via-gui.sh diagnostics / retry / last-failure ==="
+{
+  WRAP="$ROOT/security/studio/claude-via-gui.sh"
+  GDIR="$WORK/gui"
+  mkdir -p "$GDIR"
+  CACHE="$GDIR/cache"
+  FAKE="$GDIR/fake-claude"
+  COUNT="$GDIR/count"
+
+  invoke_wrap() {
+    env CLAUDE_BIN="$FAKE" \
+      SECURITY_CLAUDE_GUI_CACHE="$CACHE" \
+      SECURITY_CLAUDE_GUI_RETRIES="${WRAP_RETRIES:-0}" \
+      SECURITY_CLAUDE_GUI_TIMEOUT_S="${WRAP_TIMEOUT:-20}" \
+      SECURITY_CLAUDE_GUI_FAILURE_MAX_AGE_S="${WRAP_MAX_AGE:-3600}" \
+      bash "$WRAP" "$@"
+  }
+
+  # Empty-stderr exit 1 must no longer produce the "exited 1:" void.
+  cat > "$FAKE" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+  chmod +x "$FAKE"
+  mkdir -p "$CACHE"
+  run invoke_wrap -p --model sonnet <<'EOF'
+prompt
+EOF
+  if [ "$RUN_RC" -ne 0 ] && [ -n "$RUN_OUT" ] \
+      && echo "$RUN_OUT" | grep -q 'empty stderr' \
+      && echo "$RUN_OUT" | grep -qE 'run_via_gui|run_direct|direct_auth_ok|gui_auth_ok'; then
+    case_result "empty-stderr failure emits stage + hint" 1
+  else
+    case_result "empty-stderr failure emits stage + hint" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+
+  MARK="$CACHE/last-failure.json"
+  if [ -f "$MARK" ] \
+      && grep -q '"ts"' "$MARK" \
+      && grep -q '"stage"' "$MARK" \
+      && grep -q '"message"' "$MARK" \
+      && grep -q 'empty stderr' "$MARK"; then
+    case_result "failure writes last-failure.json" 1
+  else
+    case_result "failure writes last-failure.json" 0 \
+      "mark=$(short "$(cat "$MARK" 2>/dev/null || echo missing)")"
+  fi
+
+  run invoke_wrap --studio-auth-check
+  if [ "$RUN_RC" -ne 0 ] \
+      && echo "$RUN_OUT" | grep -q 'direct_auth_ok' \
+      && echo "$RUN_OUT" | grep -q 'gui_auth_ok'; then
+    case_result "auth-check failure names both stages" 1
+  else
+    case_result "auth-check failure names both stages" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+
+  # Recent marker is mentioned even when the current probe succeeds.
+  cat > "$FAKE" <<'EOF'
+#!/bin/sh
+if [ "$1" = "auth" ]; then
+  printf '%s\n' '{"loggedIn":true}'
+  exit 0
+fi
+printf '%s\n' 'ok-answer'
+exit 0
+EOF
+  chmod +x "$FAKE"
+  mkdir -p "$CACHE"
+  printf '{"ts":"%s","stage":"run_via_gui","message":"run_via_gui failed: exit 1: simulated"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARK"
+  run invoke_wrap --studio-auth-check
+  if [ "$RUN_RC" -eq 0 ] \
+      && echo "$RUN_OUT" | grep -q 'auth ok (direct)' \
+      && echo "$RUN_OUT" | grep -q 'letzter Fehlschlag' \
+      && echo "$RUN_OUT" | grep -q 'simulated'; then
+    case_result "auth-check mentions recent last-failure.json" 1
+  else
+    case_result "auth-check mentions recent last-failure.json" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+
+  printf '{"ts":"%s","stage":"run_via_gui","message":"auth-check-should-clear"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARK"
+  run invoke_wrap --studio-auth-check
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'auth ok (direct)' && [ ! -f "$MARK" ]; then
+    case_result "successful auth-check clears last-failure.json" 1
+  else
+    case_result "successful auth-check clears last-failure.json" 0 \
+      "rc=$RUN_RC mark_exists=$([ -f "$MARK" ] && echo yes || echo no) out=$(short "$RUN_OUT")"
+  fi
+
+  # Marker older than the window stays silent.
+  printf '{"ts":"%s","stage":"run_via_gui","message":"run_via_gui failed: exit 1: stale-marker"}\n' \
+    "$(date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)" > "$MARK"
+  run invoke_wrap --studio-auth-check
+  if [ "$RUN_RC" -eq 0 ] \
+      && echo "$RUN_OUT" | grep -q 'auth ok (direct)' \
+      && ! echo "$RUN_OUT" | grep -q 'stale-marker' \
+      && ! echo "$RUN_OUT" | grep -q 'letzter Fehlschlag'; then
+    case_result "auth-check ignores last-failure older than 1h" 1
+  else
+    case_result "auth-check ignores last-failure older than 1h" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+
+  # Successful run deletes the marker.
+  printf '{"ts":"%s","stage":"run_via_gui","message":"should-be-cleared"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARK"
+  run invoke_wrap -p --model sonnet <<'EOF'
+prompt
+EOF
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'ok-answer' && [ ! -f "$MARK" ]; then
+    case_result "successful run clears last-failure.json" 1
+  else
+    case_result "successful run clears last-failure.json" 0 \
+      "rc=$RUN_RC mark_exists=$([ -f "$MARK" ] && echo yes || echo no) out=$(short "$RUN_OUT")"
+  fi
+
+  # Empty stdout+stderr + exit!=0 is retried; a real stderr body is not.
+  cat > "$FAKE" <<EOF
+#!/bin/sh
+if [ "\$1" = "auth" ]; then
+  printf '%s\\n' '{"loggedIn":false}'
+  exit 1
+fi
+n=0
+[ -f "$COUNT" ] && n=\$(cat "$COUNT")
+n=\$((n + 1))
+echo "\$n" > "$COUNT"
+exit 1
+EOF
+  chmod +x "$FAKE"
+  rm -f "$COUNT"
+  mkdir -p "$CACHE"
+  WRAP_RETRIES=2
+  run invoke_wrap -p --model sonnet <<'EOF'
+prompt
+EOF
+  WRAP_RETRIES=0
+  ncount="$(cat "$COUNT" 2>/dev/null || echo 0)"
+  if [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "3" ]; then
+    case_result "empty-stderr run_via_gui retries default-2 extra times" 1
+  else
+    case_result "empty-stderr run_via_gui retries default-2 extra times" 0 \
+      "rc=$RUN_RC count=$ncount out=$(short "$RUN_OUT")"
+  fi
+
+  cat > "$FAKE" <<EOF
+#!/bin/sh
+if [ "\$1" = "auth" ]; then
+  printf '%s\\n' '{"loggedIn":false}'
+  exit 1
+fi
+n=0
+[ -f "$COUNT" ] && n=\$(cat "$COUNT")
+n=\$((n + 1))
+echo "\$n" > "$COUNT"
+echo "model exploded" >&2
+exit 1
+EOF
+  chmod +x "$FAKE"
+  rm -f "$COUNT"
+  mkdir -p "$CACHE"
+  WRAP_RETRIES=2
+  run invoke_wrap -p --model sonnet <<'EOF'
+prompt
+EOF
+  WRAP_RETRIES=0
+  ncount="$(cat "$COUNT" 2>/dev/null || echo 0)"
+  if [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "1" ] && echo "$RUN_OUT" | grep -q 'model exploded'; then
+    case_result "non-empty stderr is not retried" 1
+  else
+    case_result "non-empty stderr is not retried" 0 \
+      "rc=$RUN_RC count=$ncount out=$(short "$RUN_OUT")"
+  fi
+}
+
 echo "=== resolveCliCommand (SECURITY_CLAUDE_WRAPPER) ==="
 {
   cat > "$WORK/cli-wrap.mjs" <<'EOF'
