@@ -12,7 +12,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, appendFileSync } from 'node:fs';
 
 /** Env vars named by any provider's apiKeyEnv, cleared so child processes cannot inherit them. */
 export function scrubbedEnv(config, base = process.env, extra = {}) {
@@ -58,6 +58,85 @@ function cliBinaryExists(bin) {
 }
 
 const availability = new Map();
+
+// ---------------------------------------------------------------- usage log (observation only; never changes the complete() string contract)
+
+const usageLog = [];
+
+function isBilled(target) {
+  return target.provider?.billed === true;
+}
+
+function recordUsage(entry) {
+  usageLog.push(entry);
+  const path = process.env.SECURITY_USAGE_LOG_FILE;
+  if (!path) return;
+  try {
+    appendFileSync(path, `${JSON.stringify(entry)}\n`);
+  } catch {
+    // Observation only — a missing/unwritable file must not fail the scan.
+  }
+}
+
+/** Copy of recorded model-call usage. Callers must not mutate the internal log. */
+export function getUsageLog() {
+  return usageLog.map((e) => ({ ...e }));
+}
+
+/** Clear recorded usage. Tests and each check-pr.mjs process start empty. */
+export function resetUsageLog() {
+  usageLog.length = 0;
+}
+
+function cliUsageFromParsed(target, parsed) {
+  return {
+    ts: new Date().toISOString(),
+    providerName: target.providerName,
+    model: target.model,
+    kind: 'cli',
+    inputTokens: parsed.usage?.input_tokens ?? null,
+    outputTokens: parsed.usage?.output_tokens ?? null,
+    cacheReadTokens: parsed.usage?.cache_read_input_tokens ?? null,
+    cacheCreationTokens: parsed.usage?.cache_creation_input_tokens ?? null,
+    costUsd: parsed.total_cost_usd ?? null,
+    billed: isBilled(target),
+  };
+}
+
+function httpUsageFromJson(target, json) {
+  const usage = json?.usage || {};
+  return {
+    ts: new Date().toISOString(),
+    providerName: target.providerName,
+    model: target.model,
+    kind: 'http',
+    inputTokens: usage.input_tokens ?? usage.prompt_tokens ?? null,
+    outputTokens: usage.output_tokens ?? usage.completion_tokens ?? null,
+    cacheReadTokens: usage.cache_read_input_tokens ?? null,
+    cacheCreationTokens: usage.cache_creation_input_tokens ?? null,
+    costUsd: null,
+    billed: isBilled(target),
+  };
+}
+
+/** Parse CLI JSON stdout. On parse failure return the raw string and log parseError. */
+function takeCliResult(target, out) {
+  let parsed;
+  try {
+    parsed = JSON.parse(out);
+  } catch {
+    recordUsage({
+      ts: new Date().toISOString(),
+      providerName: target.providerName,
+      model: target.model,
+      kind: 'cli',
+      parseError: true,
+    });
+    return out;
+  }
+  recordUsage(cliUsageFromParsed(target, parsed));
+  return parsed.result ?? '';
+}
 
 /** Why a provider cannot be used, or null when it can. */
 export function unavailableReason(config, name) {
@@ -120,6 +199,7 @@ function callCli(config, target, system, user) {
   const full = resolveCliCommand(provider, providerName);
   const bin = full[0];
   const argv = full.slice(1);
+  if (provider.jsonOutput === true) argv.push('--output-format', 'json');
   if (provider.modelFlag) argv.push(provider.modelFlag, model);
 
   return new Promise((resolve_, reject) => {
@@ -141,6 +221,7 @@ function callCli(config, target, system, user) {
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code !== 0) reject(new Error(`${bin} exited ${code}: ${err.slice(0, 300)}`));
+      else if (provider.jsonOutput === true) resolve_(takeCliResult(target, out));
       else resolve_(out);
     });
 
@@ -173,6 +254,7 @@ async function callHttp(target, system, user) {
   if (res.status === 429 || res.status >= 500) throw new Error(`http ${res.status}`);
   if (!res.ok) throw new Error(`http ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const json = await res.json();
+  recordUsage(httpUsageFromJson(target, json));
   return anthropic
     ? (json.content ?? []).map((b) => b.text || '').join('')
     : json.choices?.[0]?.message?.content ?? '';
