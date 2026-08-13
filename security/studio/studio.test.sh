@@ -14,7 +14,12 @@ PASS=0
 FAIL=0
 TOTAL=0
 WORK=
-cleanup() { [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"; }
+cleanup() {
+  if [ -n "${WORK:-}" ] && [ -d "$WORK" ]; then
+    chmod -R u+w "$WORK" 2>/dev/null || true
+    rm -rf "$WORK"
+  fi
+}
 trap cleanup EXIT
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/studio-test.XXXXXX")"
 
@@ -111,6 +116,371 @@ echo "=== claude-via-gui.sh present + syntax ==="
       case_result "claude-via-gui.sh executable" 0 "not executable"
     fi
   fi
+}
+
+echo "=== claude-via-gui.sh diagnostics / retry / last-failure ==="
+{
+  WRAP="$ROOT/security/studio/claude-via-gui.sh"
+  GDIR="$WORK/gui"
+  mkdir -p "$GDIR"
+  CACHE="$GDIR/cache"
+  FAKE="$GDIR/fake-claude"
+  COUNT="$GDIR/count"
+
+  invoke_wrap() {
+    env CLAUDE_BIN="$FAKE" \
+      SECURITY_CLAUDE_GUI_CACHE="$CACHE" \
+      SECURITY_CLAUDE_GUI_FORCE="${WRAP_FORCE:-0}" \
+      SECURITY_CLAUDE_GUI_RETRIES="${WRAP_RETRIES:-0}" \
+      SECURITY_CLAUDE_GUI_TIMEOUT_S="${WRAP_TIMEOUT:-20}" \
+      SECURITY_CLAUDE_GUI_FAILURE_MAX_AGE_S="${WRAP_MAX_AGE:-3600}" \
+      bash "$WRAP" "$@"
+  }
+
+  # Empty-stderr exit 1 must no longer produce the "exited 1:" void.
+  cat > "$FAKE" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+  chmod +x "$FAKE"
+  mkdir -p "$CACHE"
+  run invoke_wrap -p --model sonnet <<'EOF'
+prompt
+EOF
+  if [ "$RUN_RC" -ne 0 ] && [ -n "$RUN_OUT" ] \
+      && echo "$RUN_OUT" | grep -q 'empty stderr' \
+      && echo "$RUN_OUT" | grep -qE 'run_via_gui|run_direct|direct_auth_ok|gui_auth_ok'; then
+    case_result "empty-stderr failure emits stage + hint" 1
+  else
+    case_result "empty-stderr failure emits stage + hint" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+
+  MARK="$CACHE/last-failure.json"
+  if [ -f "$MARK" ] \
+      && grep -q '"ts"' "$MARK" \
+      && grep -q '"stage"' "$MARK" \
+      && grep -q '"message"' "$MARK" \
+      && grep -q 'empty stderr' "$MARK"; then
+    case_result "failure writes last-failure.json" 1
+  else
+    case_result "failure writes last-failure.json" 0 \
+      "mark=$(short "$(cat "$MARK" 2>/dev/null || echo missing)")"
+  fi
+
+  run invoke_wrap --studio-auth-check
+  if [ "$RUN_RC" -ne 0 ] \
+      && echo "$RUN_OUT" | grep -q 'direct_auth_ok' \
+      && echo "$RUN_OUT" | grep -q 'gui_auth_ok'; then
+    case_result "auth-check failure names both stages" 1
+  else
+    case_result "auth-check failure names both stages" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+
+  # Recent marker is mentioned even when the current probe succeeds.
+  cat > "$FAKE" <<'EOF'
+#!/bin/sh
+if [ "$1" = "auth" ]; then
+  printf '%s\n' '{"loggedIn":true}'
+  exit 0
+fi
+printf '%s\n' 'ok-answer'
+exit 0
+EOF
+  chmod +x "$FAKE"
+  mkdir -p "$CACHE"
+  printf '{"ts":"%s","stage":"run_via_gui","message":"run_via_gui failed: exit 1: simulated"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARK"
+  run invoke_wrap --studio-auth-check
+  if [ "$RUN_RC" -eq 0 ] \
+      && echo "$RUN_OUT" | grep -q 'auth ok (direct)' \
+      && echo "$RUN_OUT" | grep -q 'letzter Fehlschlag' \
+      && echo "$RUN_OUT" | grep -q 'simulated'; then
+    case_result "auth-check mentions recent last-failure.json" 1
+  else
+    case_result "auth-check mentions recent last-failure.json" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+
+  printf '{"ts":"%s","stage":"run_via_gui","message":"auth-check-should-clear"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARK"
+  run invoke_wrap --studio-auth-check
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'auth ok (direct)' && [ ! -f "$MARK" ]; then
+    case_result "successful auth-check clears last-failure.json" 1
+  else
+    case_result "successful auth-check clears last-failure.json" 0 \
+      "rc=$RUN_RC mark_exists=$([ -f "$MARK" ] && echo yes || echo no) out=$(short "$RUN_OUT")"
+  fi
+
+  # Marker older than the window stays silent.
+  printf '{"ts":"%s","stage":"run_via_gui","message":"run_via_gui failed: exit 1: stale-marker"}\n' \
+    "$(date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)" > "$MARK"
+  run invoke_wrap --studio-auth-check
+  if [ "$RUN_RC" -eq 0 ] \
+      && echo "$RUN_OUT" | grep -q 'auth ok (direct)' \
+      && ! echo "$RUN_OUT" | grep -q 'stale-marker' \
+      && ! echo "$RUN_OUT" | grep -q 'letzter Fehlschlag'; then
+    case_result "auth-check ignores last-failure older than 1h" 1
+  else
+    case_result "auth-check ignores last-failure older than 1h" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+
+  # Successful run deletes the marker.
+  printf '{"ts":"%s","stage":"run_via_gui","message":"should-be-cleared"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARK"
+  run invoke_wrap -p --model sonnet <<'EOF'
+prompt
+EOF
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'ok-answer' && [ ! -f "$MARK" ]; then
+    case_result "successful run clears last-failure.json" 1
+  else
+    case_result "successful run clears last-failure.json" 0 \
+      "rc=$RUN_RC mark_exists=$([ -f "$MARK" ] && echo yes || echo no) out=$(short "$RUN_OUT")"
+  fi
+
+  # Empty stdout+stderr + exit!=0 is retried; a real stderr body is not.
+  cat > "$FAKE" <<EOF
+#!/bin/sh
+if [ "\$1" = "auth" ]; then
+  printf '%s\\n' '{"loggedIn":false}'
+  exit 1
+fi
+n=0
+[ -f "$COUNT" ] && n=\$(cat "$COUNT")
+n=\$((n + 1))
+echo "\$n" > "$COUNT"
+exit 1
+EOF
+  chmod +x "$FAKE"
+  rm -f "$COUNT"
+  mkdir -p "$CACHE"
+  WRAP_RETRIES=2
+  run invoke_wrap -p --model sonnet <<'EOF'
+prompt
+EOF
+  WRAP_RETRIES=0
+  ncount="$(cat "$COUNT" 2>/dev/null || echo 0)"
+  if [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "3" ]; then
+    case_result "empty-stderr run_via_gui retries default-2 extra times" 1
+  else
+    case_result "empty-stderr run_via_gui retries default-2 extra times" 0 \
+      "rc=$RUN_RC count=$ncount out=$(short "$RUN_OUT")"
+  fi
+
+  cat > "$FAKE" <<EOF
+#!/bin/sh
+if [ "\$1" = "auth" ]; then
+  printf '%s\\n' '{"loggedIn":false}'
+  exit 1
+fi
+n=0
+[ -f "$COUNT" ] && n=\$(cat "$COUNT")
+n=\$((n + 1))
+echo "\$n" > "$COUNT"
+echo "model exploded" >&2
+exit 1
+EOF
+  chmod +x "$FAKE"
+  rm -f "$COUNT"
+  mkdir -p "$CACHE"
+  WRAP_RETRIES=2
+  run invoke_wrap -p --model sonnet <<'EOF'
+prompt
+EOF
+  WRAP_RETRIES=0
+  ncount="$(cat "$COUNT" 2>/dev/null || echo 0)"
+  if [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "1" ] && echo "$RUN_OUT" | grep -q 'model exploded'; then
+    case_result "non-empty stderr is not retried" 1
+  else
+    case_result "non-empty stderr is not retried" 0 \
+      "rc=$RUN_RC count=$ncount out=$(short "$RUN_OUT")"
+  fi
+
+  # --- sanitize_text + unwritable cache (review blockers) ---
+
+  file_mode() {
+    stat -f '%OLp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null || echo missing
+  }
+
+  # Persist a failing run_direct whose stderr is $1; then inspect last-failure.json.
+  fail_with_stderr() {
+    printf '%s\n' "$1" > "$GDIR/secret-payload"
+    cat > "$FAKE" <<EOF
+#!/bin/sh
+if [ "\$1" = "auth" ]; then
+  printf '%s\\n' '{"loggedIn":true}'
+  exit 0
+fi
+cat "$GDIR/secret-payload" >&2
+exit 1
+EOF
+    chmod +x "$FAKE"
+    rm -f "$MARK"
+    mkdir -p "$CACHE"
+    run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+  }
+
+  fail_with_stderr '{"access_token": "eyJabc123notajwt"}'
+  if [ "$RUN_RC" -ne 0 ] && [ -f "$MARK" ] \
+      && grep -q '\[redacted\]' "$MARK" \
+      && ! grep -q 'eyJabc123notajwt' "$MARK" \
+      && ! grep -q 'access_token' "$MARK"; then
+    case_result "sanitize redacts JSON-quoted access_token" 1
+  else
+    case_result "sanitize redacts JSON-quoted access_token" 0 \
+      "rc=$RUN_RC mark=$(short "$(cat "$MARK" 2>/dev/null || echo missing)")"
+  fi
+
+  # Prefix/body stay on separate source lines so no ADDED line matches the gate
+  # patterns (sk-ant-[A-Za-z0-9_-]{32,} / AKIA[0-9A-Z]{16}). Runtime expansion
+  # rebuilds the exact strings sanitize_text must redact.
+  SK_OAT_PFX='sk-ant-oat01-'
+  SK_OAT_BODY='abcdefghijklmnopqrstuvwxyz012345'
+  SK_ORT_PFX='sk-ant-ort01-'
+  SK_ORT_BODY='abcdefghijklmnopqrstuvwxyz012345'
+  fail_with_stderr "{\"claudeAiOauth\":{\"accessToken\":\"${SK_OAT_PFX}${SK_OAT_BODY}\",\"refreshToken\":\"${SK_ORT_PFX}${SK_ORT_BODY}\"}}"
+  if [ "$RUN_RC" -ne 0 ] && [ -f "$MARK" ] \
+      && grep -q '\[redacted\]' "$MARK" \
+      && ! grep -q 'sk-ant-oat01' "$MARK" \
+      && ! grep -q 'sk-ant-ort01' "$MARK" \
+      && ! grep -q 'accessToken' "$MARK"; then
+    case_result "sanitize redacts Claude camelCase OAuth tokens" 1
+  else
+    case_result "sanitize redacts Claude camelCase OAuth tokens" 0 \
+      "rc=$RUN_RC mark=$(short "$(cat "$MARK" 2>/dev/null || echo missing)")"
+  fi
+
+  AKIA_PART1='AKIA'
+  AKIA_PART2='IOSFODNN7EXAMPLE'
+  fail_with_stderr "{\"api_key\": \"${AKIA_PART1}${AKIA_PART2}\"}"
+  if [ "$RUN_RC" -ne 0 ] && [ -f "$MARK" ] \
+      && grep -q '\[redacted\]' "$MARK" \
+      && ! grep -q "${AKIA_PART1}${AKIA_PART2}" "$MARK" \
+      && ! grep -q 'api_key' "$MARK"; then
+    case_result "sanitize redacts JSON-quoted api_key" 1
+  else
+    case_result "sanitize redacts JSON-quoted api_key" 0 \
+      "rc=$RUN_RC mark=$(short "$(cat "$MARK" 2>/dev/null || echo missing)")"
+  fi
+
+  fail_with_stderr 'invalid_grant: refresh failed for token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dGVzdHNpZ25hdHVyZQ'
+  if [ "$RUN_RC" -ne 0 ] && [ -f "$MARK" ] \
+      && grep -q '\[redacted\]' "$MARK" \
+      && ! grep -q 'eyJhbGci' "$MARK"; then
+    case_result "sanitize redacts raw JWT without keyword" 1
+  else
+    case_result "sanitize redacts raw JWT without keyword" 0 \
+      "rc=$RUN_RC mark=$(short "$(cat "$MARK" 2>/dev/null || echo missing)")"
+  fi
+
+  # Persist path that emit_auth_check_success would otherwise re-print on stdout.
+  fail_with_stderr '{"access_token": "eyJabc123notajwt"}'
+  cat > "$FAKE" <<'EOF'
+#!/bin/sh
+if [ "$1" = "auth" ]; then
+  printf '%s\n' '{"loggedIn":true}'
+  exit 0
+fi
+printf '%s\n' 'ok-answer'
+exit 0
+EOF
+  chmod +x "$FAKE"
+  run invoke_wrap --studio-auth-check
+  if [ "$RUN_RC" -eq 0 ] \
+      && echo "$RUN_OUT" | grep -q 'auth ok (direct)' \
+      && echo "$RUN_OUT" | grep -q 'letzter Fehlschlag' \
+      && ! echo "$RUN_OUT" | grep -q 'eyJabc123notajwt' \
+      && ! echo "$RUN_OUT" | grep -q 'access_token'; then
+    case_result "auth-check success does not re-emit persisted secret" 1
+  else
+    case_result "auth-check success does not re-emit persisted secret" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+
+  fail_with_stderr '{"access_token": "eyJabc123notajwt"}'
+  dperm="$(file_mode "$CACHE")"
+  fperm="$(file_mode "$MARK")"
+  if [ "$dperm" = "700" ] && [ "$fperm" = "600" ]; then
+    case_result "last-failure.json and cache dir are owner-only" 1
+  else
+    case_result "last-failure.json and cache dir are owner-only" 0 \
+      "dir=$dperm file=$fperm"
+  fi
+
+  # Blocker 2: unwritable CACHE_ROOT must fail loud, not abort on bare mkdir/mktemp.
+  cat > "$FAKE" <<'EOF'
+#!/bin/sh
+if [ "$1" = "auth" ]; then
+  printf '%s\n' '{"loggedIn":true}'
+  exit 0
+fi
+printf '%s\n' 'should-not-run'
+exit 0
+EOF
+  chmod +x "$FAKE"
+  ROPARENT="$GDIR/ro-parent"
+  rm -rf "$ROPARENT"
+  mkdir -p "$ROPARENT"
+  chmod 555 "$ROPARENT"
+  CACHE="$ROPARENT/cache"
+  MARK="$CACHE/last-failure.json"
+  run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+  chmod 755 "$ROPARENT" 2>/dev/null || true
+  if [ "$RUN_RC" -eq 3 ] \
+      && echo "$RUN_OUT" | grep -q 'claude-via-gui:' \
+      && echo "$RUN_OUT" | grep -qE 'not writable|mktemp failed' \
+      && ! echo "$RUN_OUT" | grep -q 'should-not-run'; then
+    case_result "unwritable cache still emits diagnostic" 1
+  else
+    case_result "unwritable cache still emits diagnostic" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+  CACHE="$GDIR/cache"
+  MARK="$CACHE/last-failure.json"
+  mkdir -p "$CACHE"
+
+  # Same defect on the GUI fallback: parent of CACHE_ROOT is 555, FORCE=1
+  # so the call site takes run_via_gui (plain statement, not an if-condition).
+  cat > "$FAKE" <<'EOF'
+#!/bin/sh
+if [ "$1" = "auth" ]; then
+  printf '%s\n' '{"loggedIn":true}'
+  exit 0
+fi
+printf '%s\n' 'should-not-run'
+exit 0
+EOF
+  chmod +x "$FAKE"
+  ROPARENT="$GDIR/ro-parent-gui"
+  rm -rf "$ROPARENT"
+  mkdir -p "$ROPARENT"
+  chmod 555 "$ROPARENT"
+  CACHE="$ROPARENT/cache"
+  MARK="$CACHE/last-failure.json"
+  WRAP_FORCE=1
+  run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+  WRAP_FORCE=0
+  chmod 755 "$ROPARENT" 2>/dev/null || true
+  if [ "$RUN_RC" -eq 3 ] \
+      && echo "$RUN_OUT" | grep -q 'claude-via-gui:' \
+      && echo "$RUN_OUT" | grep -qE 'not writable|mktemp failed' \
+      && ! echo "$RUN_OUT" | grep -q 'should-not-run'; then
+    case_result "unwritable cache still emits diagnostic via run_via_gui" 1
+  else
+    case_result "unwritable cache still emits diagnostic via run_via_gui" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+  CACHE="$GDIR/cache"
+  MARK="$CACHE/last-failure.json"
+  mkdir -p "$CACHE"
 }
 
 echo "=== resolveCliCommand (SECURITY_CLAUDE_WRAPPER) ==="
