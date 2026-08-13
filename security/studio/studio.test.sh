@@ -129,6 +129,7 @@ echo "=== claude-via-gui.sh diagnostics / retry / last-failure ==="
 
   invoke_wrap() {
     env CLAUDE_BIN="$FAKE" \
+      PATH="${WRAP_PATH:-$PATH}" \
       SECURITY_CLAUDE_GUI_CACHE="$CACHE" \
       SECURITY_CLAUDE_GUI_FORCE="${WRAP_FORCE:-0}" \
       SECURITY_CLAUDE_GUI_RETRIES="${WRAP_RETRIES:-0}" \
@@ -481,6 +482,80 @@ PROMPT
   CACHE="$GDIR/cache"
   MARK="$CACHE/last-failure.json"
   mkdir -p "$CACHE"
+
+  # Fund 3: a pre-existing CACHE_ROOT owned by someone else must refuse.
+  # chown to another real user needs sudo on macOS, so mock `stat -f %u`
+  # (and GNU `stat -c %u`) via PATH to report a foreign uid.
+  cat > "$FAKE" <<'EOF'
+#!/bin/sh
+if [ "$1" = "auth" ]; then
+  printf '%s\n' '{"loggedIn":true}'
+  exit 0
+fi
+printf '%s\n' 'should-not-run'
+exit 0
+EOF
+  chmod +x "$FAKE"
+  FOREIGN="$GDIR/foreign-cache"
+  rm -rf "$FOREIGN"
+  mkdir -p "$FOREIGN"
+  STATBIN="$GDIR/fake-stat-bin"
+  mkdir -p "$STATBIN"
+  cat > "$STATBIN/stat" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-f" ] && [ "$2" = "%u" ]; then
+  echo 65534
+  exit 0
+fi
+if [ "$1" = "-c" ] && [ "$2" = "%u" ]; then
+  echo 65534
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+EOF
+  chmod +x "$STATBIN/stat"
+  CACHE="$FOREIGN"
+  MARK="$CACHE/last-failure.json"
+  WRAP_PATH="$STATBIN:$PATH"
+  run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+  WRAP_PATH=
+  if [ "$RUN_RC" -eq 3 ] \
+      && echo "$RUN_OUT" | grep -q 'exists but is not owned by the current user' \
+      && ! echo "$RUN_OUT" | grep -q 'should-not-run'; then
+    case_result "foreign-owned cache refuses instead of being reused" 1
+  else
+    case_result "foreign-owned cache refuses instead of being reused" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+  CACHE="$GDIR/cache"
+  MARK="$CACHE/last-failure.json"
+  mkdir -p "$CACHE"
+
+  # Fund 1: launchd labels must not be primarily PID+$RANDOM (15 bits).
+  if grep -qE 'claude-(auth|run)\.\$\$\.\$RANDOM' "$WRAP"; then
+    case_result "launchd labels use 64-bit urandom not PID+RANDOM" 0 \
+      "still uses \$\$ . \$RANDOM"
+  elif grep -q 'od -An -tx1 -N8 /dev/urandom' "$WRAP"; then
+    case_result "launchd labels use 64-bit urandom not PID+RANDOM" 1
+  else
+    case_result "launchd labels use 64-bit urandom not PID+RANDOM" 0 \
+      "no \$\$ . \$RANDOM but also no od /dev/urandom"
+  fi
+
+  # Fund 3 helper: one definition + one call immediately before each mkdir.
+  helper_def=0
+  grep -q '^ensure_owned_cache_root()' "$WRAP" && helper_def=1
+  mkdir_n="$(grep -c 'mkdir -p "$CACHE_ROOT"' "$WRAP" || true)"
+  mention_n="$(grep -c 'ensure_owned_cache_root' "$WRAP" || true)"
+  if [ "$helper_def" -eq 1 ] && [ "$mkdir_n" -eq 4 ] \
+      && [ "$mention_n" -eq $((mkdir_n + 1)) ]; then
+    case_result "ensure_owned_cache_root wraps all four CACHE_ROOT mkdirs" 1
+  else
+    case_result "ensure_owned_cache_root wraps all four CACHE_ROOT mkdirs" 0 \
+      "def=$helper_def mkdir_n=$mkdir_n mention_n=$mention_n"
+  fi
 }
 
 echo "=== resolveCliCommand (SECURITY_CLAUDE_WRAPPER) ==="

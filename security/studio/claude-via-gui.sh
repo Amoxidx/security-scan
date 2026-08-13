@@ -18,7 +18,13 @@
 #   SECURITY_CLAUDE_GUI_TIMEOUT_S  wall clock for one GUI job (default: 300)
 #   SECURITY_CLAUDE_GUI_RETRIES    extra run_via_gui attempts after an
 #                                  empty-stdout AND empty-stderr exit != 0
-#                                  (default: 2; set 0 to disable)
+#                                  (default: 2; set 0 to disable).
+#                                  Retry assumes empty stdout+stderr means
+#                                  the job had no side effects — true for
+#                                  the current use (read-only text review
+#                                  prompt, no tool-calls), but wrong if this
+#                                  wrapper ever ran a job with real file or
+#                                  network writes.
 #   SECURITY_CLAUDE_GUI_CACHE      override marker/work cache
 #                                  (default: ~/.cache/security-claude-gui)
 #   SECURITY_CLAUDE_GUI_FAILURE_MAX_AGE_S
@@ -50,7 +56,11 @@ GUI_AUTH_REASON=""
 
 die() {
   echo "claude-via-gui: $*" >&2
-  write_failure_marker "${FAIL_STAGE}" "$*"
+  # Skip when the cache itself is unusable: writing the marker would recurse
+  # (die → marker → owner check → die) and persist into a foreign directory.
+  if [ "${SKIP_FAILURE_MARKER:-0}" != "1" ]; then
+    write_failure_marker "${FAIL_STAGE}" "$*"
+  fi
   exit 3
 }
 
@@ -61,6 +71,28 @@ is_nonneg_int() {
     ''|*[!0-9]*) return 1 ;;
     *) return 0 ;;
   esac
+}
+
+# Refuse a pre-existing CACHE_ROOT that is not owned by this user. mkdir
+# stays at each call site so best-effort vs fail-loud is unchanged.
+ensure_owned_cache_root() {
+  [ -e "$CACHE_ROOT" ] || return 0
+  local owner
+  owner="$(stat -f %u "$CACHE_ROOT" 2>/dev/null || stat -c %u "$CACHE_ROOT" 2>/dev/null || true)"
+  if [ "$owner" != "$(id -u)" ]; then
+    SKIP_FAILURE_MARKER=1
+    die "cache dir ${CACHE_ROOT} exists but is not owned by the current user — refusing to use it"
+  fi
+}
+
+# 64 bits from /dev/urandom (16 hex chars). PID is a debug suffix only.
+gui_job_label() {
+  local kind="$1" hex
+  hex="$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
+  if [ "${#hex}" -ne 16 ]; then
+    die "failed to read 64 bits of entropy for launchd label"
+  fi
+  printf 'com.amoxidx.claude-%s.%s.%s' "$kind" "$$" "$hex"
 }
 
 # One-line, quote-free text for marker JSON (no tokens; truncate).
@@ -79,6 +111,7 @@ sanitize_text() {
 
 write_failure_marker() {
   local stage="$1" message="$2" ts tmp
+  ensure_owned_cache_root
   mkdir -p "$CACHE_ROOT" 2>/dev/null || return 0
   chmod 700 "$CACHE_ROOT" 2>/dev/null || true
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -231,10 +264,11 @@ gui_auth_ok() {
     return 1
   fi
 
+  ensure_owned_cache_root
   mkdir -p "$CACHE_ROOT"
   chmod 700 "$CACHE_ROOT" 2>/dev/null || true
   work="$(mktemp -d "${CACHE_ROOT}/auth-XXXXXX")"
-  label="com.amoxidx.claude-auth.$$.$RANDOM"
+  label="$(gui_job_label auth)"
   runner="${work}/run.sh"
   plist="${work}/job.plist"
 
@@ -306,7 +340,7 @@ EOF
 submit_gui_job() {
   local work="$1" uidn="$2" label plist
   plist="${work}/job.plist"
-  label="com.amoxidx.claude-run.$$.$RANDOM"
+  label="$(gui_job_label run)"
   JOB_CODE=""
 
   cat >"$plist" <<EOF
@@ -357,6 +391,7 @@ run_via_gui() {
   command -v launchctl >/dev/null 2>&1 || die "launchctl not available"
   launchctl print "gui/${uidn}" >/dev/null 2>&1 || die "no active GUI session for uid ${uidn} (log into the Mac desktop once)"
 
+  ensure_owned_cache_root
   mkdir -p "$CACHE_ROOT" 2>/dev/null || die "cache dir ${CACHE_ROOT} not writable"
   chmod 700 "$CACHE_ROOT" 2>/dev/null || true
   work="$(mktemp -d "${CACHE_ROOT}/run-XXXXXX" 2>/dev/null)" || die "mktemp -d failed in ${CACHE_ROOT}"
@@ -463,6 +498,7 @@ run_direct() {
   shift
   local errf rc=0 err_txt
   FAIL_STAGE="run_direct"
+  ensure_owned_cache_root
   mkdir -p "$CACHE_ROOT" 2>/dev/null || die "cache dir ${CACHE_ROOT} not writable"
   chmod 700 "$CACHE_ROOT" 2>/dev/null || true
   errf="$(mktemp "${CACHE_ROOT}/direct-err-XXXXXX" 2>/dev/null)" || die "mktemp failed in ${CACHE_ROOT}"
