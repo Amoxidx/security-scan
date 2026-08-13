@@ -804,6 +804,80 @@ EOF
   fi
 }
 
+echo "=== run() + row() signal passthrough (node) ==="
+{
+  # check-pr.mjs is not importable (top-level parseArgs + main()). Extract the
+  # live run()/row() bodies so a regression in either function fails this case.
+  cat > "$WORK/signal-passthrough.mjs" <<'EOF'
+import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+function extractFunction(src, name) {
+  const start = src.indexOf(`\nfunction ${name}(`);
+  if (start < 0) throw new Error(`function ${name} not found in check-pr.mjs`);
+  const rest = src.slice(start + 1);
+  const end = rest.search(/\n\}\n/);
+  if (end < 0) throw new Error(`end of function ${name} not found`);
+  return rest.slice(0, end + 2);
+}
+
+function loadRunAndRow(checkPrPath) {
+  const src = readFileSync(checkPrPath, 'utf8');
+  const body = `${extractFunction(src, 'run')}\n${extractFunction(src, 'row')}\nreturn { run, row };`;
+  return new Function('spawnSync', body)(spawnSync);
+}
+
+function stageFromRun(r) {
+  // Same fields stageXxx() forward into row(): exit + signal + blocked.
+  return { exit: r.status, signal: r.signal || null, blocked: false };
+}
+
+function main() {
+  const checkPrPath = process.argv[2];
+  const work = process.env.WORK;
+  const { run, row } = loadRunAndRow(checkPrPath);
+
+  const dieTerm = join(work, 'die-term.sh');
+  writeFileSync(dieTerm, '#!/bin/sh\nkill -TERM $$\n');
+  chmodSync(dieTerm, 0o755);
+  const killed = run(dieTerm, []);
+  const killedRow = row('harness', stageFromRun(killed));
+  if (killed.signal !== 'SIGTERM') {
+    console.error('run() dropped signal', killed);
+    process.exit(1);
+  }
+  if (!killedRow.includes('(signal: SIGTERM)')) {
+    console.error('row() missing (signal: SIGTERM); got:', killedRow, killed);
+    process.exit(1);
+  }
+
+  const okPath = join(work, 'ok-exit.sh');
+  writeFileSync(okPath, '#!/bin/sh\nexit 0\n');
+  chmodSync(okPath, 0o755);
+  const ok = run(okPath, []);
+  const okRow = row('static', stageFromRun(ok));
+  if (ok.status !== 0 || ok.signal) {
+    console.error('clean script should be exit 0 / no signal', ok);
+    process.exit(1);
+  }
+  if (/\(signal:/.test(okRow)) {
+    console.error('exit 0 must not show (signal: ...):', okRow);
+    process.exit(1);
+  }
+
+  console.log(JSON.stringify({ killedRow, okRow, status: killed.status, signal: killed.signal }));
+}
+main();
+EOF
+  run env WORK="$WORK" node "$WORK/signal-passthrough.mjs" "$CHECK_PR"
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q '(signal: SIGTERM)'; then
+    case_result "run+row pass signal through to table row" 1
+  else
+    case_result "run+row pass signal through to table row" 0 "$(short "$RUN_OUT")"
+  fi
+}
+
 echo "=== resolveLabModelSpec (config default + ollama preference) ==="
 {
   cat > "$WORK/lab-model-test.mjs" <<'EOF'

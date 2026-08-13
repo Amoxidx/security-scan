@@ -484,7 +484,7 @@ function stageStatic(subject, outDir) {
   } else {
     console.log('  clean');
   }
-  return { name: 'static', exit: r.status, blocked: r.status !== 0 };
+  return { name: 'static', exit: r.status, signal: r.signal || null, blocked: r.status !== 0 };
 }
 
 function stageScanners(subject, outDir) {
@@ -520,6 +520,7 @@ function stageScanners(subject, outDir) {
   return {
     name: 'scanners',
     exit: n.status,
+    signal: n.signal || r.signal || null,
     findings: list,
     findingsPath,
     diffPath,
@@ -544,6 +545,7 @@ function stageTriage(subject, outDir, findingsPath) {
   return {
     name: 'triage',
     exit: r.status,
+    signal: r.signal || null,
     triaged: data.triaged || [],
     survivors: still,
     blocked: r.status === 1,
@@ -573,6 +575,7 @@ function stageHarness(subject, outDir, diffPath) {
   return {
     name: 'harness',
     exit: r.status,
+    signal: r.signal || null,
     findings,
     survivors,
     blocking,
@@ -641,7 +644,7 @@ function stageLab(subject, outDir, candidates, diffPath, config) {
     const report = readJson(join(runOut, 'report.json'), null);
     const verdict = report?.verdict || (r.status === 3 ? 'setup-error' : 'inconclusive');
     console.log(`    -> ${verdict} (exit ${r.status})`);
-    results.push({ finding: f, verdict, report, exit: r.status, out: runOut, model });
+    results.push({ finding: f, verdict, report, exit: r.status, signal: r.signal || null, out: runOut, model });
   }
 
   const reproduced = results.filter((r) => r.verdict === 'reproduced');
@@ -649,6 +652,7 @@ function stageLab(subject, outDir, candidates, diffPath, config) {
   return {
     name: 'lab',
     exit: reproduced.length ? 1 : 0,
+    signal: results.find((x) => x.signal)?.signal || null,
     results,
     reproduced,
     inconclusive,
@@ -975,7 +979,8 @@ function buildReport(subject, stages, gate, usage) {
 function row(name, stage, note = '') {
   if (!stage) return `| ${name} | — | ${note || 'skipped'} |`;
   const mark = stage.blocked ? 'FAIL' : stage.exit === 0 ? 'ok' : 'warn';
-  return `| ${name} | ${mark} ${stage.exit} | ${note} |`;
+  const exit = `${mark} ${stage.exit}${stage.signal ? ` (signal: ${stage.signal})` : ''}`;
+  return `| ${name} | ${exit} | ${note} |`;
 }
 
 function postCommentSafe(subject, body) {
