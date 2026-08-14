@@ -878,6 +878,97 @@ EOF
   fi
 }
 
+echo "=== stageEnv() PATH includes ~/.local/node/bin ==="
+{
+  # check-pr.mjs is not importable (top-level parseArgs + main()). Extract the
+  # live stageEnv() body and inject a fake homedir so the new PATH entry is
+  # reachable only through that prepended directory.
+  cat > "$WORK/stageenv-path.mjs" <<'EOF'
+import { readFileSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+function extractFunction(src, name) {
+  const start = src.indexOf(`\nfunction ${name}(`);
+  if (start < 0) throw new Error(`function ${name} not found in check-pr.mjs`);
+  const rest = src.slice(start + 1);
+  const end = rest.search(/\n\}\n/);
+  if (end < 0) throw new Error(`end of function ${name} not found`);
+  return rest.slice(0, end + 2);
+}
+
+function loadStageEnv(checkPrPath, fakeHome) {
+  const src = readFileSync(checkPrPath, 'utf8');
+  const body = `${extractFunction(src, 'stageEnv')}\nreturn { stageEnv };`;
+  return new Function(
+    'homedir',
+    'join',
+    'REPO_ROOT',
+    'hostExtra',
+    'existsSync',
+    'resolveDockerBin',
+    body,
+  )(
+    () => fakeHome,
+    join,
+    '/fake-repo',
+    '',
+    () => false,
+    () => '/usr/bin/docker',
+  );
+}
+
+function commandV(name, path) {
+  return spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name], {
+    env: { PATH: path },
+    encoding: 'utf8',
+  });
+}
+
+function main() {
+  const checkPrPath = process.argv[2];
+  const work = process.env.WORK;
+  const fakeHome = join(work, 'fake-home');
+  const nodeBin = join(fakeHome, '.local', 'node', 'bin');
+  const toolName = 'stageenv-node-bin-probe';
+  const toolPath = join(nodeBin, toolName);
+  mkdirSync(nodeBin, { recursive: true });
+  writeFileSync(toolPath, '#!/bin/sh\nexit 0\n');
+  chmodSync(toolPath, 0o755);
+
+  const { stageEnv } = loadStageEnv(checkPrPath, fakeHome);
+  const basePath = '/usr/bin:/bin';
+  const env = stageEnv({ PATH: basePath });
+  const parts = (env.PATH || '').split(':');
+  if (!parts.includes(nodeBin)) {
+    console.error('stageEnv PATH missing', nodeBin, env.PATH);
+    process.exit(1);
+  }
+
+  const miss = commandV(toolName, basePath);
+  if (miss.status === 0) {
+    console.error('probe leaked onto base PATH', miss.stdout);
+    process.exit(1);
+  }
+
+  const found = commandV(toolName, env.PATH);
+  if (found.status !== 0 || found.stdout.trim() !== toolPath) {
+    console.error('command -v missed probe on staged PATH', found);
+    process.exit(1);
+  }
+
+  console.log(JSON.stringify({ nodeBin, found: found.stdout.trim() }));
+}
+main();
+EOF
+  run env WORK="$WORK" node "$WORK/stageenv-path.mjs" "$CHECK_PR"
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q '\.local/node/bin'; then
+    case_result "stageEnv prepends ~/.local/node/bin to PATH" 1
+  else
+    case_result "stageEnv prepends ~/.local/node/bin to PATH" 0 "$(short "$RUN_OUT")"
+  fi
+}
+
 echo "=== resolveLabModelSpec (config default + ollama preference) ==="
 {
   cat > "$WORK/lab-model-test.mjs" <<'EOF'
