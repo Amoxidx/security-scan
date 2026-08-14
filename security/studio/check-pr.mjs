@@ -232,6 +232,7 @@ function stageEnv(base = process.env) {
   env.PATH = [
     join(REPO_ROOT, 'security/studio'),
     `${homedir()}/.local/bin`,
+    `${homedir()}/.local/node/bin`,
     '/usr/local/bin',
     '/opt/homebrew/opt/docker/bin',
     '/opt/homebrew/bin',
