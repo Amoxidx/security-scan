@@ -1090,6 +1090,63 @@ echo "=== list-targets + tree mode dry ==="
   fi
 }
 
+echo "=== static-checks.sh against the empty-tree base (tree mode's real base) ==="
+{
+  # The test above passes --skip-static, so it never exercised this path — exactly why
+  # this bug shipped. --mode tree hands the empty-tree object hash to static-checks.sh
+  # as "$BASE"; before the fix, the "..." diff syntax rejected it outright ("is a tree,
+  # not a commit") and blocked the gate before any real check ran.
+  EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  run bash "$ROOT/security/gate/static-checks.sh" "$EMPTY_TREE"
+  if [ "$RUN_RC" -le 1 ] && echo "$RUN_OUT" | grep -qE '^Changed files \([0-9]+\)'; then
+    case_result "static-checks.sh runs against the empty-tree base" 1
+  else
+    case_result "static-checks.sh runs against the empty-tree base" 0 "rc=$RUN_RC $(short "$RUN_OUT")"
+  fi
+}
+
+echo "=== static-checks.sh keeps merge-base (three-dot) semantics for a real commit base ==="
+{
+  # A tree-object base must fall back to two-dot, but a real commit base must still use
+  # three-dot (diff against the merge-base, not the literal base tip) -- otherwise a PR
+  # scan would report every unrelated base-branch commit as part of the PR's own diff.
+  # This is the discriminating case the empty-tree test above cannot catch: on this repo,
+  # origin/master is a direct ancestor of HEAD, so two-dot and three-dot happen to produce
+  # the same result here regardless of which one the script picks.
+  #
+  # The discriminator must be a MODIFIED shared file, not an added/removed one: a plain
+  # add-only-on-base-branch file is filtered out either way by --diff-filter=d (excludes
+  # deletions), so two-dot and three-dot would look identical through that lens too — a
+  # first version of this test used exactly that shape and passed even with the "always
+  # treat as not-a-commit" mutation below, silently proving nothing.
+  REPO="$WORK/mergebase-semantics"
+  rm -rf "$REPO"; mkdir -p "$REPO"
+  git -C "$REPO" init -q -b main
+  git -C "$REPO" config user.email t@t.local
+  git -C "$REPO" config user.name t
+  echo v0 > "$REPO/shared.txt"
+  git -C "$REPO" add shared.txt
+  git -C "$REPO" commit -q -m c0
+  git -C "$REPO" checkout -q -b feature
+  echo head-only > "$REPO/head-only.txt"
+  git -C "$REPO" add head-only.txt
+  git -C "$REPO" commit -q -m head-commit
+  git -C "$REPO" checkout -q main
+  echo v1-base-modified > "$REPO/shared.txt"
+  git -C "$REPO" commit -q -am base-modifies-shared
+  git -C "$REPO" checkout -q feature
+
+  run env -C "$REPO" bash "$ROOT/security/gate/static-checks.sh" main
+  # Three-dot (correct): feature never touched shared.txt relative to the merge-base c0,
+  # so only head-only.txt is "changed". Two-dot (the bug/mutation): shared.txt differs
+  # between main's tip and feature's tip, so it wrongly shows up too.
+  if echo "$RUN_OUT" | grep -q 'head-only.txt' && ! echo "$RUN_OUT" | grep -q 'shared.txt'; then
+    case_result "static-checks.sh uses merge-base for a real commit base" 1
+  else
+    case_result "static-checks.sh uses merge-base for a real commit base" 0 "$(short "$RUN_OUT")"
+  fi
+}
+
 echo "=== SECURITY_HOST_ALLOW_EXTRA reaches static-checks ==="
 {
   # Unit-ish: the shell gate merges EXTRA; empty CODE_ADDED path is hard, so just

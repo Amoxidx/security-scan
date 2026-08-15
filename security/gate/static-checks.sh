@@ -27,7 +27,18 @@ if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! CHANGED=$(git diff --name-only --diff-filter=d "$BASE"...HEAD); then
+# --mode tree passes the empty-tree object (every file counts as added) instead of a real
+# base commit. "..." needs two commits to compute a merge-base; a tree object has no commit
+# ancestry, so that syntax fails outright ("is a tree, not a commit") and blocked every tree
+# scan's static gate before this file's own findings were even read. ".." is a plain diff
+# against the given tree-ish and works for both a real commit and the empty tree.
+if [ "$(git cat-file -t "$BASE" 2>/dev/null)" = "commit" ]; then
+  RANGE="$BASE...HEAD"
+else
+  RANGE="$BASE..HEAD"
+fi
+
+if ! CHANGED=$(git diff --name-only --diff-filter=d "$RANGE"); then
   fail "git diff failed against base ref: $BASE"
   printf '\033[31mStatic security gate: BLOCKED\033[0m\n'
   exit 1
@@ -37,7 +48,7 @@ fi
 # BLOCK line into the added-lines payload. Return non-zero and let the caller fail loudly.
 added_lines() { # added_lines [pathspec...] -> the '+' lines of the diff, without headers
   local diff_out
-  if ! diff_out=$(git diff --unified=0 "$BASE"...HEAD -- "$@"); then
+  if ! diff_out=$(git diff --unified=0 "$RANGE" -- "$@"); then
     return 1
   fi
   echo "$diff_out" | grep -E '^\+' | grep -Ev '^\+\+\+' || true
