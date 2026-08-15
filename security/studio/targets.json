@@ -1,6 +1,6 @@
 {
   "$comment": "Named targets for Studio checks. Paths tried in order; first existing .git wins. ~ expands to $HOME. Orgs for auto-pr-check are also listed in auto-pr-check.config.json.",
-  "defaultTarget": "security-scan",
+  "defaultTarget": "generic",
   "targets": {
     "security-scan": {
       "label": "Amoxidx security-scan (gate itself)",
