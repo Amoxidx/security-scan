@@ -355,9 +355,7 @@ function resolveSubject() {
     // exactly how a three-dot diff loses its merge-base on any repo whose base
     // branch has moved more than --depth commits since the PR forked (measured:
     // 47 of 144 real scans failed with "no merge base" from this before the fix).
-    sh('git', ['-C', local, 'fetch', '--depth', '50', 'origin',
-      `pull/${pr}/head:refs/security-scan/pr-${pr}`],
-    { timeoutMs: 300_000 });
+    fetchPrHead(local, pr, `refs/security-scan/pr-${pr}`);
     fetchBaseFully(local, `+refs/heads/${meta.baseRefName}:refs/remotes/origin/${meta.baseRefName}`);
     workdir = mkdtempSync(join(cacheRoot, `wt-pr-${pr}-`));
     // remove empty dir so worktree add can use the path
@@ -371,9 +369,7 @@ function resolveSubject() {
     const cloneArgs = ['repo', 'clone', repo, workdir, '--', '--depth', '1'];
     sh('gh', cloneArgs, { timeoutMs: 300_000 });
     // Same reasoning as the fast path above: PR head shallow, base branch full.
-    sh('git', ['-C', workdir, 'fetch', '--depth', '50', 'origin',
-      `pull/${pr}/head:refs/heads/pr-head`],
-    { timeoutMs: 300_000 });
+    fetchPrHead(workdir, pr, 'refs/heads/pr-head');
     fetchBaseFully(workdir, `refs/heads/${meta.baseRefName}:refs/remotes/origin/${meta.baseRefName}`);
     sh('git', ['-C', workdir, 'checkout', '--force', 'pr-head']);
   }
@@ -423,6 +419,21 @@ function fetchBaseFully(dir, refspec) {
   if (r.status !== 0 && isShallow) {
     run('git', ['-C', dir, 'fetch', '--depth', '100000', 'origin', refspec], { timeoutMs: 300_000 });
   }
+}
+
+/**
+ * Fetch a PR's head into a local ref, force-updating it. `dest` is always a
+ * scratch ref this tool owns (`refs/security-scan/pr-<n>` on a persistent
+ * per-target checkout, or `refs/heads/pr-head` in a throwaway clone) — never
+ * something a human could have local commits on, so there is no reason to
+ * preserve its previous value. Without the force prefix, a re-scan of the
+ * same PR number after a rebase/force-push on GitHub leaves the old ref
+ * pointing at a now-diverged commit and git refuses the non-fast-forward
+ * update outright (measured: 9 of 217 real scans crashed this way).
+ */
+function fetchPrHead(dir, pr, dest) {
+  sh('git', ['-C', dir, 'fetch', '--depth', '50', 'origin', `+pull/${pr}/head:${dest}`],
+    { timeoutMs: 300_000 });
 }
 
 function ensureBaseRef(dir, base) {

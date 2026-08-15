@@ -1194,6 +1194,99 @@ EOF
     case_result "fetchBaseFully unshallows local clone for real merge-base" 0 "$(short "$RUN_OUT")"
   fi
 }
+
+echo "=== fetchPrHead() force-updates a stale local PR-head ref after upstream rebase (node) ==="
+{
+  cat > "$WORK/fetchprhead.mjs" <<'EOF'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+
+function extractFunction(src, name) {
+  const start = src.indexOf(`\nfunction ${name}(`);
+  if (start < 0) throw new Error(`function ${name} not found in check-pr.mjs`);
+  const rest = src.slice(start + 1);
+  const end = rest.search(/\n\}\n/);
+  if (end < 0) throw new Error(`end of function ${name} not found`);
+  return rest.slice(0, end + 2);
+}
+
+function loadFetchPrHead(checkPrPath) {
+  const src = readFileSync(checkPrPath, 'utf8');
+  const body = `${extractFunction(src, 'run')}\n${extractFunction(src, 'sh')}\n${extractFunction(src, 'fetchPrHead')}\nreturn { sh, fetchPrHead };`;
+  return new Function('spawnSync', body)(spawnSync);
+}
+
+function sh(cmd, args, cwd) {
+  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} failed: ${r.stderr}`);
+  return r.stdout;
+}
+
+function main() {
+  const checkPrPath = process.argv[2];
+  const root = mkdtempSync(join(tmpdir(), 'fetchprhead-'));
+  const origin = join(root, 'origin.git');
+  const local = join(root, 'local');
+  try {
+    // "origin": a main branch plus a PR branch at commit A.
+    sh('git', ['init', '-q', '-b', 'main', origin]);
+    sh('git', ['-C', origin, 'config', 'user.email', 't@t.local']);
+    sh('git', ['-C', origin, 'config', 'user.name', 't']);
+    sh('git', ['-C', origin, 'commit', '--allow-empty', '-q', '-m', 'c0']);
+    sh('git', ['-C', origin, 'checkout', '-q', '-b', 'pr-branch']);
+    sh('git', ['-C', origin, 'commit', '--allow-empty', '-q', '-m', 'pr-commit-A']);
+    sh('git', ['-C', origin, 'checkout', '-q', 'main']);
+
+    // Wire up a `pull/9/head` ref on "origin" the way a real GitHub PR exposes
+    // it, at commit A first (matching what a prior scan would have fetched).
+    sh('git', ['-C', origin, 'update-ref', 'refs/pull/9/head', 'pr-branch']);
+
+    // "local" = a persistent per-target checkout (the real-world `local` fast
+    // path), already holding refs/security-scan/pr-9 from a PRIOR scan of this
+    // PR number at commit A -- exactly what check-pr.mjs leaves behind.
+    sh('git', ['clone', '-q', origin, local]);
+    sh('git', ['-C', local, 'fetch', '-q', 'origin',
+      'pull/9/head:refs/security-scan/pr-9'], local);
+
+    // Rebase pr-branch on the far side: same PR number, diverged history --
+    // the exact "push to an open PR after a rebase" scenario the LaunchAgent
+    // hits on every re-scan of a PR whose author force-pushed.
+    sh('git', ['-C', origin, 'checkout', '-q', 'main']);
+    sh('git', ['-C', origin, 'commit', '--allow-empty', '-q', '-m', 'c1-after-rebase']);
+    sh('git', ['-C', origin, 'branch', '-f', 'pr-branch', 'main']);
+    sh('git', ['-C', origin, 'checkout', '-q', 'pr-branch']);
+    sh('git', ['-C', origin, 'commit', '--allow-empty', '-q', '-m', 'pr-commit-B-rebased']);
+    sh('git', ['-C', origin, 'update-ref', 'refs/pull/9/head', 'pr-branch']); // move pull/9/head to the rebased tip
+    sh('git', ['-C', origin, 'checkout', '-q', 'main']);
+
+    const { fetchPrHead } = loadFetchPrHead(checkPrPath);
+    // Before the fix: this throws (non-fast-forward, exit 1) because the old
+    // refs/security-scan/pr-9 (commit A) is not an ancestor of the rebased
+    // commit B and the refspec had no "+" force prefix.
+    fetchPrHead(local, 9, 'refs/security-scan/pr-9');
+
+    const rev = spawnSync('git', ['-C', local, 'rev-parse', 'refs/security-scan/pr-9'], { encoding: 'utf8' });
+    const subject = spawnSync('git', ['-C', local, 'log', '-1', '--format=%s', 'refs/security-scan/pr-9'], { encoding: 'utf8' });
+    if (rev.status !== 0 || subject.stdout.trim() !== 'pr-commit-B-rebased') {
+      console.error('ref not force-updated to rebased head:', subject.stdout, subject.stderr);
+      process.exit(1);
+    }
+    console.log('ok updated-to=' + subject.stdout.trim());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+main();
+EOF
+  run env WORK="$WORK" node "$WORK/fetchprhead.mjs" "$CHECK_PR"
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q '^ok updated-to=pr-commit-B-rebased'; then
+    case_result "fetchPrHead force-updates a stale PR-head ref after rebase" 1
+  else
+    case_result "fetchPrHead force-updates a stale PR-head ref after rebase" 0 "$(short "$RUN_OUT")"
+  fi
+}
 echo
 if [ "$FAIL" -eq 0 ]; then
   printf '\033[32m%s/%s Fälle bestanden\033[0m\n' "$PASS" "$TOTAL"
