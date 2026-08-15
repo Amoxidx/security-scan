@@ -1108,6 +1108,92 @@ echo "=== SECURITY_HOST_ALLOW_EXTRA reaches static-checks ==="
   fi
 }
 
+echo "=== fetchBaseFully() unshallows a shallow local clone for real merge-base (node) ==="
+{
+  cat > "$WORK/fetchbasefully.mjs" <<'EOF'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+
+function extractFunction(src, name) {
+  const start = src.indexOf(`\nfunction ${name}(`);
+  if (start < 0) throw new Error(`function ${name} not found in check-pr.mjs`);
+  const rest = src.slice(start + 1);
+  const end = rest.search(/\n\}\n/);
+  if (end < 0) throw new Error(`end of function ${name} not found`);
+  return rest.slice(0, end + 2);
+}
+
+function loadFetchBaseFully(checkPrPath) {
+  const src = readFileSync(checkPrPath, 'utf8');
+  const body = `${extractFunction(src, 'run')}\n${extractFunction(src, 'fetchBaseFully')}\nreturn { run, fetchBaseFully };`;
+  return new Function('spawnSync', body)(spawnSync);
+}
+
+function sh(cmd, args, cwd) {
+  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} failed: ${r.stderr}`);
+  return r.stdout;
+}
+
+function main() {
+  const checkPrPath = process.argv[2];
+  const root = mkdtempSync(join(tmpdir(), 'fetchbasefully-'));
+  const origin = join(root, 'origin.git');
+  const local = join(root, 'local');
+  try {
+    // A bare-ish "origin" with a base branch of 60 commits and a PR branch
+    // that forked at commit 1 -- 59 commits behind the current base tip.
+    sh('git', ['init', '-q', '-b', 'main', origin]);
+    sh('git', ['-C', origin, 'config', 'user.email', 't@t.local']);
+    sh('git', ['-C', origin, 'config', 'user.name', 't']);
+    sh('git', ['-C', origin, 'commit', '--allow-empty', '-q', '-m', 'c0']);
+    sh('git', ['-C', origin, 'branch', 'pr-branch']);
+    for (let i = 1; i <= 60; i += 1) {
+      sh('git', ['-C', origin, 'commit', '--allow-empty', '-q', '-m', `c${i}`]);
+    }
+    sh('git', ['-C', origin, 'checkout', '-q', 'pr-branch']);
+    sh('git', ['-C', origin, 'commit', '--allow-empty', '-q', '-m', 'pr-only-commit']);
+    sh('git', ['-C', origin, 'checkout', '-q', 'main']);
+
+    // "local" = a pre-existing SHALLOW clone, exactly the real-world scenario
+    // (gh repo clone --depth 1, same as check-pr.mjs's own clone path).
+    // --no-local forces real shallow-clone semantics; a same-machine "local"
+    // clone (the default optimization) silently ignores --depth otherwise.
+    sh('git', ['clone', '-q', '--no-local', '--depth', '1', origin, local]);
+    if (sh('git', ['-C', local, 'rev-parse', '--is-shallow-repository'], local).trim() !== 'true') {
+      throw new Error('setup broken: local clone is not shallow');
+    }
+
+    const { fetchBaseFully } = loadFetchBaseFully(checkPrPath);
+    sh('git', ['-C', local, 'fetch', '--depth', '1', 'origin',
+      '+refs/heads/pr-branch:refs/remotes/origin/pr-branch'], local);
+
+    // Before the fix under test: a --depth-limited base fetch would leave the
+    // two shallow slices non-overlapping -- merge-base fails with "no merge
+    // base", exactly the failure mode measured in 47 of 144 real scans.
+    fetchBaseFully(local, '+refs/heads/main:refs/remotes/origin/main');
+
+    const mb = spawnSync('git', ['-C', local, 'merge-base', 'origin/main', 'origin/pr-branch'], { encoding: 'utf8' });
+    if (mb.status !== 0 || !mb.stdout.trim()) {
+      console.error('merge-base still fails after fetchBaseFully:', mb.stderr);
+      process.exit(1);
+    }
+    console.log('ok merge-base=' + mb.stdout.trim().slice(0, 8));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+main();
+EOF
+  run env WORK="$WORK" node "$WORK/fetchbasefully.mjs" "$CHECK_PR"
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q '^ok merge-base='; then
+    case_result "fetchBaseFully unshallows local clone for real merge-base" 1
+  else
+    case_result "fetchBaseFully unshallows local clone for real merge-base" 0 "$(short "$RUN_OUT")"
+  fi
+}
 echo
 if [ "$FAIL" -eq 0 ]; then
   printf '\033[32m%s/%s Fälle bestanden\033[0m\n' "$PASS" "$TOTAL"
