@@ -34,7 +34,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, cpSync
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -156,6 +156,30 @@ function writeDiff(work, base, caseOut) {
   return diffPath;
 }
 
+/**
+ * Same wiring check-pr.mjs's stageEnv() does for the AI stages: the CLI
+ * providers' subscription OAuth lives in the login keychain, which a plain
+ * non-interactive SSH child can't read, and codex lives under a PATH entry
+ * this process doesn't inherit by default. Without both, every hunt lens
+ * fails silently (measured: all 17 corpus cases, 3/3 lenses each, before
+ * this fix) and the eval's "AI stage" numbers are actually the static-only
+ * baseline in disguise.
+ */
+function aiStageEnv() {
+  const env = {};
+  const claudeWrap = join(REPO, 'security/studio/claude-via-gui.sh');
+  if (existsSync(claudeWrap)) env.SECURITY_CLAUDE_WRAPPER = claudeWrap;
+  env.PATH = [
+    join(REPO, 'security/studio'),
+    `${homedir()}/.local/bin`,
+    `${homedir()}/.local/node/bin`,
+    '/usr/local/bin',
+    '/opt/homebrew/bin',
+    process.env.PATH || '',
+  ].join(':');
+  return env;
+}
+
 function runAiStage(work, base, caseOut) {
   const diffPath = join(caseOut, 'pr.diff');
 
@@ -166,7 +190,7 @@ function runAiStage(work, base, caseOut) {
     '--diff', diffPath,
     ...(args.config ? ['--config', args.config] : []),
     '--out', join(caseOut, 'ai'),
-  ], work);
+  ], work, aiStageEnv());
 
   const output = `${res.stdout}${res.stderr}`;
   const skipped = output.includes('No model provider is reachable');

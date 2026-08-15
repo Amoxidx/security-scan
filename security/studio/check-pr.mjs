@@ -350,25 +350,31 @@ function resolveSubject() {
   if (local && existsSync(join(local, '.git'))) {
     // Fast path: worktree off the existing local clone
     log('worktree', `from local ${local}`);
+    // PR head stays shallow (a PR's own commits are always few/recent). The base
+    // branch is fetched WITHOUT a depth limit: a shallow depth on both sides is
+    // exactly how a three-dot diff loses its merge-base on any repo whose base
+    // branch has moved more than --depth commits since the PR forked (measured:
+    // 47 of 144 real scans failed with "no merge base" from this before the fix).
     sh('git', ['-C', local, 'fetch', '--depth', '50', 'origin',
-      `pull/${pr}/head:refs/security-scan/pr-${pr}`,
-      `+refs/heads/${meta.baseRefName}:refs/remotes/origin/${meta.baseRefName}`],
+      `pull/${pr}/head:refs/security-scan/pr-${pr}`],
     { timeoutMs: 300_000 });
+    fetchBaseFully(local, `+refs/heads/${meta.baseRefName}:refs/remotes/origin/${meta.baseRefName}`);
     workdir = mkdtempSync(join(cacheRoot, `wt-pr-${pr}-`));
     // remove empty dir so worktree add can use the path
     rmSync(workdir, { recursive: true, force: true });
     sh('git', ['-C', local, 'worktree', 'add', '--detach', workdir, `refs/security-scan/pr-${pr}`]);
     // Ensure origin/base is visible inside the worktree for three-dot diff
-    run('git', ['-C', workdir, 'fetch', '--depth', '50', 'origin', meta.baseRefName], { timeoutMs: 120_000 });
+    fetchBaseFully(workdir, meta.baseRefName);
   } else {
     log('clone', `${repo} @ ${meta.headRefOid.slice(0, 8)}`);
     workdir = mkdtempSync(join(cacheRoot, `pr-${pr}-`));
     const cloneArgs = ['repo', 'clone', repo, workdir, '--', '--depth', '1'];
     sh('gh', cloneArgs, { timeoutMs: 300_000 });
+    // Same reasoning as the fast path above: PR head shallow, base branch full.
     sh('git', ['-C', workdir, 'fetch', '--depth', '50', 'origin',
-      `pull/${pr}/head:refs/heads/pr-head`,
-      `refs/heads/${meta.baseRefName}:refs/remotes/origin/${meta.baseRefName}`],
+      `pull/${pr}/head:refs/heads/pr-head`],
     { timeoutMs: 300_000 });
+    fetchBaseFully(workdir, `refs/heads/${meta.baseRefName}:refs/remotes/origin/${meta.baseRefName}`);
     sh('git', ['-C', workdir, 'checkout', '--force', 'pr-head']);
   }
 
@@ -398,13 +404,33 @@ function ensureGitRepo(dir) {
   }
 }
 
+/**
+ * Fetch a base branch with full history, refspec-agnostic. A plain `git fetch`
+ * without --depth does NOT unshallow an already-shallow local clone (e.g. one
+ * created earlier via `gh repo clone --depth 1`) — it just stays within the
+ * existing shallow boundary. Detect that case and use --unshallow once; a
+ * repo that is already full just gets a normal incremental fetch either way.
+ */
+function fetchBaseFully(dir, refspec) {
+  const shallow = run('git', ['-C', dir, 'rev-parse', '--is-shallow-repository']);
+  const isShallow = shallow.status === 0 && shallow.stdout.trim() === 'true';
+  const args = ['-C', dir, 'fetch'];
+  if (isShallow) args.push('--unshallow');
+  args.push('origin', refspec);
+  const r = run('git', args, { timeoutMs: 300_000 });
+  // --unshallow fails on a repo with more than one root commit already fetched
+  // via a prior partial deepen; fall back to a very large --depth in that case.
+  if (r.status !== 0 && isShallow) {
+    run('git', ['-C', dir, 'fetch', '--depth', '100000', 'origin', refspec], { timeoutMs: 300_000 });
+  }
+}
+
 function ensureBaseRef(dir, base) {
   if (!base || base === EMPTY_TREE) return;
   const ok = run('git', ['-C', dir, 'rev-parse', '--verify', base]);
   if (ok.status === 0) return;
-  // Try fetching the bare branch name
   const bare = base.replace(/^origin\//, '');
-  run('git', ['-C', dir, 'fetch', '--depth', '50', 'origin', bare], { timeoutMs: 120_000 });
+  fetchBaseFully(dir, bare);
   const again = run('git', ['-C', dir, 'rev-parse', '--verify', base]);
   if (again.status !== 0) {
     throw new Error(`base ref does not resolve: ${base} (in ${dir})`);
