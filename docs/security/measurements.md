@@ -402,6 +402,138 @@ grüne Jobs (`static`, `scanners`, `codeql`, `ai-review`) nicht sehen konnten.
 
 ---
 
+## 2026-08-15 — Erste echte KI-gestützte Messung (Codex/Claude, nicht `--no-ai`)
+
+Kommando: `node security/eval/run.mjs` (voller Korpus, 10 Vuln + 7 Negativkontrollen, kein
+`--skip-ai`).
+
+| Metrik | Wert | Ziel | |
+|---|---|---|---|
+| Detection Rate | **90,0 %** (9/10) | ≥ 50 % | erreicht |
+| Falsch-Positiv-Rate | **0,0 %** (0/7) | ≤ 5 % | erreicht |
+| Blockiert aus falschem Grund | 0 | 0 | erreicht |
+| p95 Wall-Clock | 143,3 s | ≤ 480 s | erreicht |
+
+Rohdaten: `security/eval/results/2026-08-15T06-03-10-956Z/` (nicht eingecheckt).
+
+Der erste Versuch dieser Messung ergab identisch 60,0 % / 0,0 % bei 12,6 s p95 — exakt die
+alte statisch-nur-Baseline vom 2026-08-08, obwohl `--no-ai` nicht gesetzt war. Ursache: der
+KI-Hunt-Provider (`security/eval/run.mjs`) hatte **nie** `SECURITY_CLAUDE_WRAPPER` oder das
+PATH-Fragment für `codex`/`kimi` gesetzt — die separate `check-pr.mjs`-Umgebung
+(`stageEnv()`) wurde dafür bereits gehärtet (PR #21), aber `eval/run.mjs` ist ein eigener
+Einstiegspunkt und hatte diese Verdrahtung nie geerbt. `ai.log` zeigte für jeden Fall
+denselben Fehler wie unten unter „Kimi-CLI-Defekt" — die KI-Stufe lief in jedem einzelnen
+bisherigen Aufruf dieses Skripts still auf null Ergebnisse. Fix: neue `aiStageEnv()` in
+`security/eval/run.mjs`, spiegelt `stageEnv()`. Landete zusammen mit dem Merge-Base-Fix in
+PR #22 (Amoxidx/security-scan).
+
+**Damit ist dies die erste Messung, die die Zielwerte je mit echter KI-Beteiligung erreicht
+hat — seit Projektstart lief hier faktisch immer nur das statische Gate**, ohne dass das an
+den gemeldeten Zahlen sichtbar war.
+
+---
+
+## 2026-08-15 — Echter Produktions-Korpus (217 reale Scans, `auto-pr-check`-LaunchAgent)
+
+Kein `eval/run.mjs`-Lauf — Auswertung der realen `check-pr.mjs`-Ergebnisse, die der
+LaunchAgent auf macpro über zwei Tage für tatsächlich geöffnete PRs in DFXswiss/,
+RealUnitCH/ und zk-coins/ gesammelt hat (`~/.cache/security-scan/auto-pr-check/runs/`,
+217 Verzeichnisse zum Auswertungszeitpunkt). Das ist der synthetische Korpus oben nicht:
+17 echte Zielrepos, reale Diffs, reale Autoren, kein kuratiertes Vuln/Benign-Set.
+
+| Ergebnis | Anzahl | Anteil |
+|---|---|---|
+| PASS | 81 | 37,3 % |
+| BLOCK — echte Inhalts-Findings (static + AI) | 39 | 18,0 % |
+| BLOCK — als „no merge base" fehlklassifiziert (Tooling-Defekt, s. u.) | 60 | 27,6 % |
+| Crash — falsches Target zugeordnet | 17 | 7,8 % |
+| Crash — PR-Head-Fetch non-fast-forward | 9 | 4,1 % |
+| Degraded (KI-Stufe lief nicht) | 1 | 0,5 % |
+
+**Drei reale Infrastrukturdefekte gefunden und behoben, die zusammen 40,3 % aller 217
+Läufe (86 von 217) verfälscht hatten — nicht nur „nicht gelaufen", sondern in 60 Fällen als
+scheinbar legitimer Sicherheits-Block gemeldet:**
+
+1. **Shallow-Clone-Merge-Base (PR #22).** `git fetch --depth 50` auf beiden Seiten eines
+   Drei-Punkt-Diffs verliert den Merge-Base, sobald der Base-Branch seit dem PR-Fork mehr als
+   50 Commits gewandert ist. Das äußerte sich **nicht** als Crash, sondern als
+   `Static security gate: BLOCKED — git diff failed against base ref … no merge base` — ein
+   Tooling-Fehler, der wie ein Sicherheitsfund aussah. 60 der 99 als „static-only BLOCK"
+   gezählten Läufe waren tatsächlich das (siehe Detailtabelle unten), nicht 47 „harte Crashes"
+   wie in einer ersten, gröberen Zählung vermutet — das statische Gate fängt einen
+   `git`-Fehler ab und meldet ihn als Blocker, statt die Pipeline abzubrechen. Fix:
+   `fetchBaseFully()` nutzt `--unshallow`.
+2. **Falsches `defaultTarget` (PR #23).** Jedes org-entdeckte Repo außerhalb der 18 benannten
+   Targets fiel auf das Self-Scan-Target zurück (`repo: Amoxidx/security-scan`,
+   `defaultBase: master`) — 17 Läufe (7,8 %) klonten das falsche Repo gegen den falschen
+   Base-Branch-Namen und crashten vor jedem Check. Fix: `defaultTarget: "generic"`.
+3. **PR-Head-Fetch ohne Force-Prefix (PR #24).** Der persistente lokale Checkout behält
+   `refs/security-scan/pr-<n>` über Scans hinweg; nach einem Rebase/Force-Push auf GitHub
+   verweigerte `git fetch` die Non-Fast-Forward-Aktualisierung — 9 Läufe (4,1 %). Fix:
+   `+`-Force-Prefix auf der PR-Head-Refspec.
+
+### Die 39 echten Inhalts-Blocks im Detail
+
+| Grund | Läufe | Einordnung |
+|---|---|---|
+| „New outbound endpoints" — reines Platzhalter-/Testdomain-Muster (`*.example`, `*.test`, `scripts.sil.org`) | 18 | **Falsch-Positiv** — keine dieser Domains ist ein realer Netzwerkaufruf |
+| „New outbound endpoints" — mindestens ein echter neuer Host (`dilisense.com`, `opencollective.com`, interne `dfx.swiss`-/`zkcoins`-Subdomains, Doku-/Social-Links) | 17 | Regelkonform „neu, nicht auf der Allowlist" — in keinem der Fälle ein tatsächlich bösartiger oder überraschender Host; Reibung, kein Fund |
+| Lockfile-/Manifest-Inkonsistenz | 6 (aus 3 Läufen, 2 Findings/Lauf) | nicht einzeln geprüft |
+| KI-Hunt mit „N blocking" > 0 | 5 | s. u. |
+
+**Kein einziger der 217 realen Läufe hat einen tatsächlich bösartigen oder
+Angreifer-kontrollierten Host gefangen.** Die „New outbound endpoints"-Regel produzierte in
+mindestens 51 % der Fälle (18 von 35), in denen sie überhaupt auslöste, ein reines
+Platzhalter-Muster als Block-Grund.
+
+### Die 5 echten KI-Blocks: 5 von 5 unverifiziert
+
+Von 217 realen Scans haben genau 5 einen KI-Fund mit `blocking > 0` erzeugt. **Alle 5 sind
+`NOT verified — no usable verifier verdict`** — die adversariale Verifikation, die laut
+zitierter Literatur (DARPA AIxCC, Buttercup) die 92 %→6 % FP-Reduktion liefert, hat in der
+gesamten beobachteten Produktionslaufzeit **kein einziges Mal** tatsächlich stattgefunden.
+
+**Ursache: Kimi-CLI-Defekt.** `hunt[fallback]` und `hunt[entropy]` (2 von 3 Hunt-Lenses) und
+ein Drittel der Verify-Modelle sind auf `kimi-cli:kimi-k3` konfiguriert. Jeder einzelne
+Aufruf in allen 217 Läufen scheiterte identisch:
+`kimi exited 1: unknown command 'kimi-k3'. See 'kimi --help'.` — vermutlich eine
+CLI-Versions-Inkompatibilität zwischen der installierten `kimi`-Version und dem konfigurierten
+Modell-Flag, kombiniert mit der bereits bekannten inaktiven Kimi-Mitgliedschaft. **Effekt:
+die „3 unabhängige Lenses + adversariale Verifikation"-Architektur lief in 100 % der
+beobachteten Produktionsfälle faktisch als Ein-Lens-System (nur `claude-cli`), dessen Funde
+nie gegengeprüft wurden, sondern per Fail-open-Policy ungeprüft durchgereicht wurden.** Nicht
+behoben — Kimi-Mitgliedschaft ist ein externer Blocker außerhalb dieses Repos.
+
+Stichprobe der 5 Funde (nicht einzeln verifiziert, aber inhaltlich plausibel):
+`DFXswiss/api#4992` (SSH-Bootstrap überschreibt `authorized_keys` bei jedem Push blind),
+`DFXswiss/api#4966` (UPDATE-Guard nach Payout-Read, doppelte Auszahlung möglich),
+`DFXswiss/services#1330` (Broadcast-Tx-Hash wird bei Fehler verworfen, User soll manuell
+erneut senden). Keiner dieser Funde wurde von JK oder einem menschlichen Reviewer bestätigt
+oder verworfen — sie liegen als „nicht verifiziert" im jeweiligen Report.
+
+### Modellverfügbarkeit real gemessen
+
+Über die 217 Läufe: **0 erfolgreiche Kimi-Aufrufe, 0 erfolgreiche Codex-Aufrufe** (Codex war
+in älteren Läufen „not on PATH" — vor PR #21 gepullt; ein Live-Test nach allen vier Fixes
+am 2026-08-15 zeigt Codex jetzt erreichbar, aber mangels weiterer Läufe seit dem Fix noch
+nicht in einer echten Produktionsmessung bestätigt). **100 % der 36 erfolgreichen KI-Aufrufe
+kamen von `claude-cli`.**
+
+### Nebenfund: eigener Fix erzeugt eine neue, unverifizierte KI-Meldung
+
+Ein Live-Testlauf von `check-pr.mjs` gegen den eigenen PR #24 (nach dessen Merge) fand einen
+plausiblen, nicht reproduzierten Fund gegen die eigene neue Zeile: ein gleichzeitiger Scan
+derselben PR-Nummer könnte über das gemeinsame Force-Fetch-Ziel den verifizierten Commit
+gegen einen anderen austauschen (TOCTOU zwischen `fetchPrHead()` und `git worktree add`).
+Real, aber praktisch nicht erreichbar: `auto-pr-check.sh` verarbeitet PRs sequentiell
+(`while`-Schleife, keine Parallelisierung) — nur ein manueller, zeitgleicher Zweitlauf
+könnte das Fenster treffen. Nicht als eigener Fix verfolgt (Fallzahl trägt nicht); hier
+dokumentiert als Beleg für die Fundqualität: plausibel, korrekt lokalisiert, aber unverifiziert
+und von geringer praktischer Reichweite — das Muster, das sich durch alle 5 echten Blocks
+zieht.
+
+---
+
 ## Vorlage für weitere Einträge
 
 ```
