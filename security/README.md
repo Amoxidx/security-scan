@@ -256,8 +256,9 @@ implementiert davon bewusst nur den Diff-Pfad.
 `security/`, `.github/workflows/security-scan.yml` und
 `.github/workflows/security-pr-trigger.yml` sind selbstständig und lassen sich kopieren.
 Repo-spezifisch anzupassen sind: die Host-Allowlist in Check 6 von `static-checks.sh`
-(unbekannte Hosts blockieren), die Lens-Auswahl in `config.json` und die Blocking-Schwelle
-in `gate.blockOn`.
+(unbekannte Hosts in Produktionspfaden blockieren; Matching ist case-insensitive und
+host-verankert) plus `hostAllowExtra` am Studio-Target, die Lens-Auswahl in `config.json`
+und die Blocking-Schwelle in `gate.blockOn`.
 
 Der PR-Pfad läuft ausschließlich über `workflow_run` (kein `pull_request` am
 Authority-Workflow). Der Trigger ist minimal und ohne Secrets; die Authority-Jobs laden

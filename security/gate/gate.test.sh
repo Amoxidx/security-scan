@@ -1162,7 +1162,7 @@ EOF
   fi
 }
 
-# ---------------------------------------------------------------- 29: unknown host blocks (M3)
+# ---------------------------------------------------------------- 29–37: host allowlist (M3)
 
 echo "=== static-checks unknown host (M3) ==="
 
@@ -1177,6 +1177,164 @@ echo "=== static-checks unknown host (M3) ==="
     case_result "M3: unknown external host blocks" 1
   else
     case_result "M3: unknown external host blocks" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# Fixture / spec / license paths are not outbound channels. An unknown host in
+# src/ still blocks (M3). These cases fail closed if the host check reads them.
+{
+  make_repo "$WORK/m3-test-path"
+  BASE_SHA="$(git -C "$WORK/m3-test-path" rev-parse HEAD)"
+  commit_file "$WORK/m3-test-path" "src/client.test.js" \
+    "expect(url).toBe('https://evil-exfil.example/collect');" \
+    "add test fixture host"
+  run bash -c "cd '$WORK/m3-test-path' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "M3: unknown host in *.test.* does not block" 1
+  else
+    case_result "M3: unknown host in *.test.* does not block" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  make_repo "$WORK/m3-e2e-path"
+  BASE_SHA="$(git -C "$WORK/m3-e2e-path" rev-parse HEAD)"
+  commit_file "$WORK/m3-e2e-path" "e2e-stack/specs/up.sh" \
+    "export REACT_APP_PUBLIC_URL=http://frontend" \
+    "add e2e docker dns host"
+  run bash -c "cd '$WORK/m3-e2e-path' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "M3: unknown host in e2e-stack/ does not block" 1
+  else
+    case_result "M3: unknown host in e2e-stack/ does not block" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  make_repo "$WORK/m3-ofl"
+  BASE_SHA="$(git -C "$WORK/m3-ofl" rev-parse HEAD)"
+  commit_file "$WORK/m3-ofl" "fonts/OFL.txt" \
+    "This Font Software is licensed under the SIL Open Font License, Version 1.1. http://scripts.sil.org/OFL" \
+    "add license citation"
+  run bash -c "cd '$WORK/m3-ofl' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "M3: license citation host does not block" 1
+  else
+    case_result "M3: license citation host does not block" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  make_repo "$WORK/m3-case"
+  BASE_SHA="$(git -C "$WORK/m3-case" rev-parse HEAD)"
+  commit_file "$WORK/m3-case" "src/ref.js" \
+    "export const src = 'https://GitHub.com/org/repo';" \
+    "add mixed-case core host"
+  run bash -c "cd '$WORK/m3-case' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "M3: CORE host match is case-insensitive" 1
+  else
+    case_result "M3: CORE host match is case-insensitive" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  make_repo "$WORK/m3-invalid"
+  BASE_SHA="$(git -C "$WORK/m3-invalid" rev-parse HEAD)"
+  commit_file "$WORK/m3-invalid" "src/parse.js" \
+    "const base = new URL(href, 'https://app.invalid/');" \
+    "add rfc6761 sentinel"
+  run bash -c "cd '$WORK/m3-invalid' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "M3: RFC 6761 .invalid sentinel does not block" 1
+  else
+    case_result "M3: RFC 6761 .invalid sentinel does not block" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# Lookalike / suffix / userinfo must not ride along on a legitimate extra.
+{
+  make_repo "$WORK/m3-lookalike"
+  BASE_SHA="$(git -C "$WORK/m3-lookalike" rev-parse HEAD)"
+  commit_file "$WORK/m3-lookalike" "src/fonts.js" \
+    "export const href = 'https://evilfonts.googleapis.com/css2';" \
+    "add lookalike host"
+  run env SECURITY_HOST_ALLOW_EXTRA='fonts\.googleapis\.com' \
+    bash -c "cd '$WORK/m3-lookalike' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -ne 0 ] && echo "$RUN_OUT" | grep -qiE 'external host|BLOCK'; then
+    case_result "M3: extra does not allow lookalike prefix host" 1
+  else
+    case_result "M3: extra does not allow lookalike prefix host" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  make_repo "$WORK/m3-suffix"
+  BASE_SHA="$(git -C "$WORK/m3-suffix" rev-parse HEAD)"
+  commit_file "$WORK/m3-suffix" "src/fonts.js" \
+    "export const href = 'https://fonts.googleapis.com.evil.example/css2';" \
+    "add suffix host"
+  run env SECURITY_HOST_ALLOW_EXTRA='fonts\.googleapis\.com' \
+    bash -c "cd '$WORK/m3-suffix' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -ne 0 ] && echo "$RUN_OUT" | grep -qiE 'external host|BLOCK'; then
+    case_result "M3: extra does not allow suffix-bypass host" 1
+  else
+    case_result "M3: extra does not allow suffix-bypass host" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  make_repo "$WORK/m3-userinfo"
+  BASE_SHA="$(git -C "$WORK/m3-userinfo" rev-parse HEAD)"
+  commit_file "$WORK/m3-userinfo" "src/fonts.js" \
+    "export const href = 'https://fonts.googleapis.com@evil.example/css2';" \
+    "add userinfo host"
+  run env SECURITY_HOST_ALLOW_EXTRA='fonts\.googleapis\.com' \
+    bash -c "cd '$WORK/m3-userinfo' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -ne 0 ] && echo "$RUN_OUT" | grep -qiE 'external host|BLOCK'; then
+    case_result "M3: extra does not allow userinfo-bypass host" 1
+  else
+    case_result "M3: extra does not allow userinfo-bypass host" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  make_repo "$WORK/m3-subdomain"
+  BASE_SHA="$(git -C "$WORK/m3-subdomain" rev-parse HEAD)"
+  commit_file "$WORK/m3-subdomain" "src/api.js" \
+    "export const url = 'https://dev.api.dfx.swiss/v1';" \
+    "add child host"
+  run env SECURITY_HOST_ALLOW_EXTRA='api\.dfx\.swiss' \
+    bash -c "cd '$WORK/m3-subdomain' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "M3: extra allows a subdomain of an allowed host" 1
+  else
+    case_result "M3: extra allows a subdomain of an allowed host" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  make_repo "$WORK/m3-hyphen"
+  BASE_SHA="$(git -C "$WORK/m3-hyphen" rev-parse HEAD)"
+  commit_file "$WORK/m3-hyphen" "src/api.js" \
+    "export const url = 'https://evil-api.dfx.swiss/v1';" \
+    "add hyphen-prefix host"
+  run env SECURITY_HOST_ALLOW_EXTRA='api\.dfx\.swiss' \
+    bash -c "cd '$WORK/m3-hyphen' && bash security/gate/static-checks.sh '$BASE_SHA'"
+  if [ "$RUN_RC" -ne 0 ] && echo "$RUN_OUT" | grep -qiE 'external host|BLOCK'; then
+    case_result "M3: extra does not allow hyphen-prefix sibling host" 1
+  else
+    case_result "M3: extra does not allow hyphen-prefix sibling host" 0 \
       "rc=$RUN_RC out=$(short "$RUN_OUT")"
   fi
 }

@@ -165,20 +165,84 @@ fi
 # ---------------------------------------------------------------- outbound network
 say '6. New outbound endpoints in added lines'
 # Code only: a link in a markdown file is a citation, not an exfiltration channel.
-# Unknown hosts block: a warn-only check never stops exfiltration endpoints. Adopters
-# extend the allowlist below for their own APIs (see security/README.md).
-# Base allowlist for this gate. Adopters / Studio targets extend via
-# SECURITY_HOST_ALLOW_EXTRA (pipe-separated regex fragments, no outer parens),
+# Tests, e2e specs, snapshots and license files cite fixtures (RFC reserved names,
+# lookalike sanitiser cases) and license URLs — those are not outbound channels.
+# An unknown host in src/ still blocks (see M3). A warn-only check never stops
+# exfiltration endpoints.
+#
+# Matching is case-insensitive and host-anchored: an extra `fonts.googleapis.com`
+# allows that host and its subdomains, not `evilfonts.googleapis.com` and not
+# `fonts.googleapis.com.evil.example`. Userinfo is stripped so
+# `https://allowed.example@evil.example/` is scored as `evil.example`.
+# Adopters / Studio targets extend via SECURITY_HOST_ALLOW_EXTRA
+# (pipe-separated regex fragments, no outer parens),
 # e.g. SECURITY_HOST_ALLOW_EXTRA='api\.dfx\.swiss|dev\.dfx\.swiss'
-HOST_ALLOW_CORE='github\.com|githubusercontent\.com|npmjs\.(org|com)|schema\.org|www\.w3\.org|opensource\.org|api\.moonshot\.ai|api\.anthropic\.com|api\.openai\.com|opencode\.ai|localhost|127\.0\.0\.1'
+#
+# `invalid` is the RFC 6761 special-use TLD: names under it never resolve on
+# the public internet and are used as URL-constructor sentinels. `.example`
+# stays blocking — it is the documented stand-in for an unknown host (M3).
+HOST_ALLOW_CORE='github\.com|githubusercontent\.com|npmjs\.(org|com)|schema\.org|www\.w3\.org|opensource\.org|api\.moonshot\.ai|api\.anthropic\.com|api\.openai\.com|opencode\.ai|localhost|127\.0\.0\.1|invalid'
 if [ -n "${SECURITY_HOST_ALLOW_EXTRA:-}" ]; then
   HOST_ALLOW="(${HOST_ALLOW_CORE}|${SECURITY_HOST_ALLOW_EXTRA})"
 else
   HOST_ALLOW="(${HOST_ALLOW_CORE})"
 fi
-if HITS=$(echo "$CODE_ADDED" | grep -noE 'https?://[a-zA-Z0-9.-]+' | sort -u -t: -k2 | grep -vE "$HOST_ALLOW"); then
+# Exact host or a subdomain of an allowed host. The leading `(.+\.)?` is what
+# stops `evilfonts.googleapis.com` from riding on `fonts.googleapis.com`.
+HOST_ALLOW_RE="^(.+\\.)?${HOST_ALLOW}$"
+
+if ! HOST_CODE_ADDED=$(added_lines . \
+  ':(exclude)*.md' \
+  ':(exclude)security/gate/*' \
+  ':(exclude)security/scanners/semgrep/rules/*' \
+  ':(exclude)security/eval/corpus/*' \
+  ':(exclude)security/redteam/prompts/*' \
+  ':(exclude)security/lab/fixtures/*' \
+  ':(exclude)*.test.*' \
+  ':(exclude)*.spec.*' \
+  ':(exclude)*.snap' \
+  ':(exclude)e2e/**' \
+  ':(exclude)e2e-stack/**' \
+  ':(exclude)**/__tests__/**' \
+  ':(exclude)**/__mocks__/**' \
+  ':(exclude)LICENSE' \
+  ':(exclude)LICENSE.*' \
+  ':(exclude)**/LICENSE' \
+  ':(exclude)**/LICENSE.*' \
+  ':(exclude)OFL.txt' \
+  ':(exclude)**/OFL.txt' \
+  ':(exclude)COPYING' \
+  ':(exclude)COPYING.*' \
+  ':(exclude)NOTICE' \
+  ':(exclude)NOTICE.*'); then
+  fail "git diff failed while collecting host-check lines against: $BASE"
+  printf '\033[31mStatic security gate: BLOCKED\033[0m\n'
+  exit 1
+fi
+
+# Strip the scheme, then any userinfo (`user@host` / `allowed@evil`), lowercase.
+HOST_EXTRACTED=$(printf '%s\n' "$HOST_CODE_ADDED" \
+  | grep -oE 'https?://[a-zA-Z0-9.@-]+' \
+  | sed -E 's#^https?://##' \
+  | sed -E 's/^.*@//' \
+  | tr '[:upper:]' '[:lower:]' \
+  | sort -u || true)
+
+HOST_HITS=
+if [ -n "$HOST_EXTRACTED" ]; then
+  while IFS= read -r host; do
+    [ -z "$host" ] && continue
+    if ! printf '%s\n' "$host" | grep -qE "$HOST_ALLOW_RE"; then
+      HOST_HITS="${HOST_HITS}${host}"$'\n'
+    fi
+  done <<EOF
+$HOST_EXTRACTED
+EOF
+fi
+
+if [ -n "$HOST_HITS" ]; then
   fail 'new external hosts in code — extend the allowlist only when intentional:'
-  echo "$HITS" | sed 's/^/         /' | cut -c1-160
+  printf '%s' "$HOST_HITS" | sed 's/^/         /'
   if [ -n "${SECURITY_HOST_ALLOW_EXTRA:-}" ]; then
     warn "SECURITY_HOST_ALLOW_EXTRA is set but did not cover the host(s) above"
   fi
