@@ -90,7 +90,7 @@ node security/studio/check-pr.mjs --list-targets
 ## Optimizations for the primary path
 
 1. **Local checkout preferred** — if `~/DFXswiss/api` exists, PR mode creates a disposable **git worktree** instead of cloning from GitHub.
-2. **Target host allowlist** — DFX targets ship `api.dfx.swiss` etc. so static does not false-block product URLs (`SECURITY_HOST_ALLOW_EXTRA`).
+2. **Target host allowlist** — DFX targets ship `api.dfx.swiss` etc. so static does not false-block product URLs (`SECURITY_HOST_ALLOW_EXTRA`). Matching is case-insensitive and host-anchored: an extra allows that host and its subdomains, not a lookalike prefix (`evilfonts.googleapis.com`) and not a suffix (`fonts.googleapis.com.evil.example`).
 3. **Studio env** — PATH/docker/colima/ollama defaults injected for non-interactive shells; `DOCKER_BIN` resolved even when OrbStack is off-PATH.
 4. **Coding-agent CLI via GUI keychain** — SSH cannot read the login keychain. `check-pr` sets `SECURITY_CLAUDE_WRAPPER` to `claude-via-gui.sh`, which re-runs the agent in the Aqua `gui/$UID` domain when direct auth is false.
 5. **Lab only for survivors** — Qwen sandbox runs only on findings that would block, capped by `--max-lab` / `config.lab.maxFindings`.
