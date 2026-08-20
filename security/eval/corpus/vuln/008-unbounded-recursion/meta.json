@@ -5,5 +5,6 @@
   "severity": "medium",
   "summary": "Depth limit removed from a nested descriptor parser, so a crafted input exhausts the stack.",
   "ground_truth": { "file": "src/descriptor.ts", "lines": [1, 10] },
-  "must_detect": true
+  "must_detect": true,
+  "static_detectable": false
 }

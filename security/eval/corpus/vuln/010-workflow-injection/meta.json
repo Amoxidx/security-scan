@@ -5,5 +5,6 @@
   "severity": "high",
   "summary": "PR title interpolated directly into a run: block, giving any contributor shell on the runner.",
   "ground_truth": { "file": ".github/workflows/greet.yml", "lines": [10, 14] },
-  "must_detect": true
+  "must_detect": true,
+  "static_detectable": true
 }

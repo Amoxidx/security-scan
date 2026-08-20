@@ -1,0 +1,10 @@
+{
+  "id": "vuln-011-idor-owner-check-removed",
+  "class": "access-control",
+  "cwe": "CWE-639",
+  "severity": "high",
+  "summary": "assertOwner is no longer called before returning a document, so any user can read any document by id.",
+  "ground_truth": { "file": "src/docs.ts", "lines": [2, 5] },
+  "must_detect": true,
+  "static_detectable": false
+}
