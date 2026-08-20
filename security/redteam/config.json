@@ -79,13 +79,16 @@
     "lenses": [
       "fallback",
       "entropy",
-      "state"
+      "state",
+      "access-control"
     ],
-    "$comment": "Second channel, not the main one. Semgrep and OSV cover parser and supply-chain better; what stays here is the class no static rule can express \u2014 a fallback that silently lowers a guarantee.",
+    "$comment": "Second channel, not the main one. Semgrep and OSV cover parser and supply-chain better; what stays here is the class no static rule can express \u2014 a fallback that silently lowers a guarantee, or an authorization check that does not actually gate the operation.",
+    "$comment_models": "Lens-to-model mapping is independent of the lens list and can be retuned later from quality/quota data; access-control currently uses the strongest reachable Claude CLI.",
     "models": {
       "fallback": "kimi-cli:kimi-code/k3",
       "entropy": "kimi-cli:kimi-code/k3",
-      "state": "claude-cli:claude-opus-5"
+      "state": "claude-cli:claude-opus-5",
+      "access-control": "claude-cli:claude-opus-5"
     }
   },
   "verify": {
