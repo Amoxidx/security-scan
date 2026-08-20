@@ -37,6 +37,21 @@ degradation happens? If not, that is the finding.
 a pin or an integrity hash. Build steps fetching remote code. CI configuration granting write
 scope or exposing secrets to code paths reachable from an untrusted contributor.
 
+**`access-control`** — For every operation that acts on a resource or performs a privileged
+action, find the authorization check that must gate it and ask whether it actually governs
+*this* operation on *this* object. Trace from the entry to the sink and name the missing or
+misplaced gate. Is the owner/permission check present on the path that still performs the
+action, or was it removed (a comment that it “moved to the router / gateway / caller” is not
+evidence)? Is the check applied to the object being acted on, or to a different one the
+caller legitimately owns? Is an async check (`isAdmin`, `hasAccess`, `assertOwner`)
+**awaited** before its boolean is used, or is the Promise itself treated as truthy? Can a
+replay/nonce/idempotency guard be bypassed because the token is checked but never consumed?
+Can a request reach an internal target because an allowlist runs on the raw input string
+instead of the parsed URL/host? The bug is the gap between the check and what it is supposed
+to protect. Do not report a check that still gates the object being acted on (even if logging
+around it changed), and do not report an unawaited call whose return value is not used as a
+gate (fire-and-forget audit or metrics is not authorization).
+
 ## Rules
 
 - Read the actual code. Do not reason from the file name or from what the function
