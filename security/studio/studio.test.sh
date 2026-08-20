@@ -980,8 +980,18 @@ async function main() {
   const configPath = process.argv[3];
   const m = await import(pathToFileURL(modPath).href);
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  if (!config.lab?.model?.includes('qwen3-coder-next')) {
+  if (config.lab?.model !== 'ollama:qwen3-coder-next:q4_K_M') {
     console.error('config.lab.model missing/wrong', config.lab);
+    process.exit(1);
+  }
+  const preferred = config.lab.preferredModels;
+  if (!Array.isArray(preferred)
+      || preferred[0] !== 'qwen3-coder-next:q4_K_M'
+      || preferred[1] !== 'frob/qwen3-coder-next:80b-a3b-q5_K_M'
+      || preferred[2] !== 'qwen3-coder-next'
+      || preferred[3] !== 'jk-coder'
+      || preferred.length !== 4) {
+    console.error('config.lab.preferredModels missing/wrong', config.lab);
     process.exit(1);
   }
   const explicit = m.resolveLabModelSpec(config, 'ollama:forced-model');
@@ -999,28 +1009,50 @@ async function main() {
     console.error('offline default failed', offline);
     process.exit(1);
   }
-  // Prefer exact primary when present.
-  const primary = m.resolveLabModelSpec(config, null, {
-    available: ['qwen3-coder-next:q4_K_M', 'qwen2.5:7b-instruct'],
-  });
-  if (primary !== 'ollama:qwen3-coder-next:q4_K_M') {
-    console.error('primary pick failed', primary);
+  // configured missing, preferred jk-coder matches jk-coder:latest
+  const macpro = ['jk-coder:latest', 'gpt-oss:20b'];
+  const preferredJk = m.resolveLabModelSpec(config, null, { available: macpro });
+  if (preferredJk !== 'ollama:jk-coder:latest') {
+    console.error('preferred jk-coder pick failed', preferredJk);
     process.exit(1);
   }
-  // Fall back to frob tag when primary missing.
-  const fallback = m.resolveLabModelSpec(config, null, {
-    available: ['frob/qwen3-coder-next:80b-a3b-q5_K_M', 'qwen3:32b'],
-  });
-  if (fallback !== 'ollama:frob/qwen3-coder-next:80b-a3b-q5_K_M') {
-    console.error('fallback pick failed', fallback);
+  // configured present: general pull of qwen3, no jk-coder
+  const general = ['qwen3-coder-next:q4_K_M', 'gpt-oss:20b'];
+  const defaultQwen = m.resolveLabModelSpec(config, null, { available: general });
+  if (defaultQwen !== 'ollama:qwen3-coder-next:q4_K_M') {
+    console.error('qwen3 default pick failed', defaultQwen);
     process.exit(1);
   }
-  console.log(JSON.stringify({ explicit, offline, primary, fallback, configDefault: config.lab.model }));
+  // Without jk-coder in preferredModels, macpro list must stay on configured qwen3.
+  const noJkPref = m.resolveLabModelSpec(
+    {
+      lab: {
+        model: 'ollama:qwen3-coder-next:q4_K_M',
+        preferredModels: [
+          'qwen3-coder-next:q4_K_M',
+          'frob/qwen3-coder-next:80b-a3b-q5_K_M',
+          'qwen3-coder-next',
+        ],
+      },
+    },
+    null,
+    { available: macpro },
+  );
+  if (noJkPref !== 'ollama:qwen3-coder-next:q4_K_M' || String(noJkPref).includes('jk-coder')) {
+    console.error('without jk-coder preferred must not pick jk-coder', noJkPref);
+    process.exit(1);
+  }
+  console.log(JSON.stringify({
+    explicit, offline, preferredJk, defaultQwen, noJkPref,
+    configDefault: config.lab.model,
+    preferred,
+  }));
 }
 main().catch((e) => { console.error(e); process.exit(1); });
 EOF
   run node "$WORK/lab-model-test.mjs" "$ROOT/security/studio/lab-model.mjs" "$ROOT/security/redteam/config.json"
-  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'qwen3-coder-next'; then
+  if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'ollama:jk-coder:latest' \
+      && echo "$RUN_OUT" | grep -q 'qwen3-coder-next:q4_K_M'; then
     case_result "resolveLabModelSpec uses config.lab + explicit override" 1
   else
     case_result "resolveLabModelSpec uses config.lab + explicit override" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"

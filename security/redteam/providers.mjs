@@ -202,12 +202,59 @@ async function withSlot(limit, fn) {
 
 // ---------------------------------------------------------------- transports
 
-/** A subscription coding agent in headless mode. Prompt on stdin, answer on stdout. */
+/** ARG_MAX from the OS; argv+env together cannot exceed this. Cached. */
+let cachedArgMax = null;
+function osArgMax() {
+  if (cachedArgMax != null) return cachedArgMax;
+  const r = spawnSync('getconf', ['ARG_MAX'], { encoding: 'utf8' });
+  const n = Number((r.stdout || '').trim());
+  cachedArgMax = Number.isFinite(n) && n > 0 ? n : 262144;
+  return cachedArgMax;
+}
+
+/**
+ * Put `prompt` immediately after the prompt flag (`-p` / `--prompt`).
+ * Kimi 0.36.0 requires `-p <prompt>` as a value; a bare `-p` swallows `--model`.
+ */
+function insertPromptArg(argv, prompt, promptFlag = '-p') {
+  const idx = argv.findIndex((a) => a === promptFlag || a === '--prompt' || a === '-p');
+  if (idx >= 0) argv.splice(idx + 1, 0, prompt);
+  else argv.push(promptFlag, prompt);
+}
+
+function assertPromptFitsArgv(bin, argv, prompt) {
+  const argMax = osArgMax();
+  const envBytes = Object.entries(process.env).reduce(
+    (n, [k, v]) => n + Buffer.byteLength(k) + Buffer.byteLength(String(v ?? '')) + 2,
+    0,
+  );
+  const argvBytes = [bin, ...argv, prompt].reduce(
+    (n, a) => n + Buffer.byteLength(String(a)) + 8,
+    0,
+  );
+  const used = envBytes + argvBytes;
+  if (used > argMax) {
+    throw new Error(
+      `${bin} promptArg: prompt is ${Buffer.byteLength(prompt)} bytes; ` +
+        `argv+env ${used} exceeds ARG_MAX ${argMax}. ` +
+        'Refusing to truncate a security prompt.',
+    );
+  }
+}
+
+/** A subscription coding agent in headless mode. */
 function callCli(config, target, system, user) {
   const { provider, model, providerName } = target;
   const full = resolveCliCommand(provider, providerName);
   const bin = full[0];
   const argv = full.slice(1);
+  const prompt = `${system}\n\n---\n\n${user}`;
+  const promptArg = provider.promptArg === true;
+
+  if (promptArg) {
+    assertPromptFitsArgv(bin, argv, prompt);
+    insertPromptArg(argv, prompt, provider.promptFlag || '-p');
+  }
   if (provider.jsonOutput === true) argv.push('--output-format', 'json');
   if (provider.modelFlag) argv.push(provider.modelFlag, model);
 
@@ -234,7 +281,10 @@ function callCli(config, target, system, user) {
       else resolve_(out);
     });
 
-    child.stdin.end(`${system}\n\n---\n\n${user}`);
+    // promptArg: Kimi takes the prompt as -p's value. Leave stdin empty.
+    // Everyone else (claude -p, codex exec) still reads stdin.
+    if (promptArg) child.stdin.end();
+    else child.stdin.end(prompt);
   });
 }
 

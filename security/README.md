@@ -199,7 +199,7 @@ Harness hart einhält. Dasselbe Muster funktioniert mit `claude -p` auf einem Cl
 Dasselbe Muster funktioniert mit einer OpenAI-Codex-CLI auf einem Codex-Abo:
 `npm i -g @openai/codex && codex` (einmalig einloggen). Modellspec: `codex-cli:<model>`.
 
-Modelle werden als `provider:model` angegeben (`kimi-cli:kimi-k3`). Ein Provider, der nicht
+Modelle werden als `provider:model` angegeben (`kimi-cli:kimi-code/k3`). Ein Provider, der nicht
 erreichbar ist — CLI nicht im PATH, Key nicht gesetzt — wird sauber übersprungen und
 gemeldet, statt den Lauf abzubrechen. Ist gar keiner erreichbar, endet Stufe B mit Exit 0;
 Stufe A blockiert weiterhin.
