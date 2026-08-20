@@ -1,0 +1,8 @@
+{
+  "id": "benign-013-discount-consumed",
+  "class": "business-logic",
+  "decoy": "apply extracted into claim() while used.add remains",
+  "targets_check": "discount-reapply / coupon-consumed lens",
+  "must_detect": false,
+  "ground_truth": { "file": "src/coupons.ts", "lines": [10, 18] }
+}

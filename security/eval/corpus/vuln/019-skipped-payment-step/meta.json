@@ -1,0 +1,10 @@
+{
+  "id": "vuln-019-skipped-payment-step",
+  "class": "business-logic",
+  "cwe": "CWE-841",
+  "severity": "critical",
+  "summary": "placeOrder fulfills internal-source orders without calling capturePayment().",
+  "ground_truth": { "file": "src/checkout.ts", "lines": [4, 8] },
+  "must_detect": true,
+  "static_detectable": false
+}

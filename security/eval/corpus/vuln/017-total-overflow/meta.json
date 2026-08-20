@@ -1,0 +1,10 @@
+{
+  "id": "vuln-017-total-overflow",
+  "class": "business-logic",
+  "cwe": "CWE-190",
+  "severity": "high",
+  "summary": "price*quantity is truncated to 32-bit with `| 0`, so a huge quantity yields a tiny invoice total.",
+  "ground_truth": { "file": "src/cart.ts", "lines": [3, 5] },
+  "must_detect": true,
+  "static_detectable": false
+}

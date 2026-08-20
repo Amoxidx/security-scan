@@ -52,6 +52,34 @@ to protect. Do not report a check that still gates the object being acted on (ev
 around it changed), and do not report an unawaited call whose return value is not used as a
 gate (fire-and-forget audit or metrics is not authorization).
 
+**`business-logic`** — Domain invariants the type checker will not enforce: money, quantities,
+credits, and ordered workflows. Trace every signed amount, price, quantity, discount, and
+limit from the entry to the mutation. Report in the JSON schema only; do not ask follow-up
+questions. (1) Sign/range of an amount: if `transfer` / `withdraw` still does
+`balances[from] -= amount` / `balances[to] += amount` (or equivalent) and the `amount > 0`
+reject is gone from **that function**, that is the finding — a negative amount inverts the
+flow (sender credited, recipient debited). Do not wait for a caller in the hunk; the entry
+is the function. (2) Overflow of a total: is `price * quantity` (or any money arithmetic)
+narrowed to a 32-bit lane (`| 0`, `>>> 0`, `Math.imul`, packed int) or otherwise wrapped so
+a huge quantity yields a tiny invoice? (3) Reusable credit: is a coupon/voucher/gift-code
+checked for validity but never marked consumed, so the same code applies twice? Follow the
+helper — `used.add` in `claim()` still counts. (4) Skipped mandatory step: for every path
+that can reach `fulfillOrder` / ship / credit-out, is `capturePayment` (or the equivalent
+settlement) actually invoked, or does a special case (`source === 'internal'`, gift, prepaid,
+admin) jump the step? (5) Missing upper bound: if a `dailyLimit` / `maxAmount` / `maxQty`
+field or config exists, is it still compared on the path that mutates, or was the comparison
+removed (a comment that it “moved to the product layer / gateway / caller” is not evidence)?
+Do not report a refactor that still rejects `amount <= 0` on the entry (`transfer`) **and**
+whose `debit`/`credit` helpers re-check sign and coverage (`bal < amount` on a
+`balances[from] ?? 0` read, credit via `balances[to] ?? 0`) — those helpers are internals of
+a still-safe transfer, not a new unguarded mint, even without `private`/`#`. Missing-key
+reads that use `?? 0` are not NaN corruption. Do not report a total that range-checks or uses BigInt/wide arithmetic before
+any narrowing, a coupon whose consume still runs on the apply path and that still rejects
+`off <= 0` and `off > order.total`, a workflow that still captures payment on every path
+that can fulfill, or a limit that is still compared before the debit. Do not report authorization (wrong object, missing owner) or TOCTOU/races — those
+are other lenses. An unused `used` set or leftover `dailyLimit` field is a clue the check
+was removed, not that it still holds.
+
 ## Rules
 
 - Read the actual code. Do not reason from the file name or from what the function

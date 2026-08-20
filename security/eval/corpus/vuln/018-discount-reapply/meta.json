@@ -1,0 +1,10 @@
+{
+  "id": "vuln-018-discount-reapply",
+  "class": "business-logic",
+  "cwe": "CWE-840",
+  "severity": "high",
+  "summary": "A coupon is checked for validity but never marked used, so the same code can be applied twice.",
+  "ground_truth": { "file": "src/coupons.ts", "lines": [5, 8] },
+  "must_detect": true,
+  "static_detectable": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": "vuln-016-negative-amount",
+  "class": "business-logic",
+  "cwe": "CWE-840",
+  "severity": "high",
+  "summary": "transfer() applies amount with no amount>0 guard, so a negative value credits the sender and debits the recipient.",
+  "ground_truth": { "file": "src/wallet.ts", "lines": [4, 9] },
+  "must_detect": true,
+  "static_detectable": false
+}
