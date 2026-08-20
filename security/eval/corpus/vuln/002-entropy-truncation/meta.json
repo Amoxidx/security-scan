@@ -6,5 +6,6 @@
   "modeled_on": "COLDCARD Mk2/Mk3: 128 bits of intended entropy reduced to ~40 effective bits",
   "summary": "Seed is derived from a 4-byte device identifier mixed into a 32-byte buffer, collapsing the real entropy to 32 bits.",
   "ground_truth": { "file": "src/seed.ts", "lines": [6, 12] },
-  "must_detect": true
+  "must_detect": true,
+  "static_detectable": false
 }

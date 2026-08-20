@@ -1,0 +1,10 @@
+{
+  "id": "vuln-015-nonce-not-consumed",
+  "class": "access-control",
+  "cwe": "CWE-294",
+  "severity": "high",
+  "summary": "A nonce is rejected if already seen, but never recorded, so the same nonce is accepted twice.",
+  "ground_truth": { "file": "src/replay.ts", "lines": [4, 7] },
+  "must_detect": true,
+  "static_detectable": false
+}

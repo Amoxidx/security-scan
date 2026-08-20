@@ -1,0 +1,8 @@
+{
+  "id": "benign-009-admin-check-awaited",
+  "class": "access-control",
+  "decoy": "admin path refactored; await isAdmin remains",
+  "targets_check": "missing-await / admin-check lens",
+  "must_detect": false,
+  "ground_truth": { "file": "src/admin.ts", "lines": [2, 6] }
+}

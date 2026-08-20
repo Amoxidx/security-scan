@@ -1,0 +1,10 @@
+{
+  "id": "vuln-012-admin-check-not-awaited",
+  "class": "access-control",
+  "cwe": "CWE-863",
+  "severity": "critical",
+  "summary": "isAdmin is not awaited, so the check is a Promise (always truthy) and every caller is treated as admin.",
+  "ground_truth": { "file": "src/admin.ts", "lines": [3, 8] },
+  "must_detect": true,
+  "static_detectable": false
+}

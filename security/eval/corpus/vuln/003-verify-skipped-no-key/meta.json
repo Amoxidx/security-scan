@@ -5,5 +5,6 @@
   "severity": "critical",
   "summary": "Signature verification returns true when no public key is configured, turning a missing config value into an auth bypass.",
   "ground_truth": { "file": "src/verify.ts", "lines": [5, 9] },
-  "must_detect": true
+  "must_detect": true,
+  "static_detectable": true
 }

@@ -1,0 +1,10 @@
+{
+  "id": "vuln-014-ssrf-allowlist-bypass",
+  "class": "access-control",
+  "cwe": "CWE-918",
+  "severity": "high",
+  "summary": "Host allowlist is checked on the raw URL string instead of the parsed hostname, so userinfo like http://evil@internal/ reaches an internal host.",
+  "ground_truth": { "file": "src/outbound.ts", "lines": [7, 11] },
+  "must_detect": true,
+  "static_detectable": false
+}

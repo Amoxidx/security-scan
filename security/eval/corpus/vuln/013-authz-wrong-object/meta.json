@@ -1,0 +1,10 @@
+{
+  "id": "vuln-013-authz-wrong-object",
+  "class": "access-control",
+  "cwe": "CWE-863",
+  "severity": "high",
+  "summary": "checkAccess runs against the caller's own account while debit runs against a different target account.",
+  "ground_truth": { "file": "src/transfer.ts", "lines": [3, 5] },
+  "must_detect": true,
+  "static_detectable": false
+}

@@ -830,14 +830,40 @@ echo "=== eval thresholds (I1) ==="
 
 EVAL_RUN="$ROOT/security/eval/run.mjs"
 EVAL_OUT="$WORK/eval-out"
+CORPUS_SRC="$ROOT/security/eval/corpus"
 mkdir -p "$EVAL_OUT"
 
-# 20. Detection below threshold via unreachable --min-detection → exit != 0, names the threshold.
+# Copy a real corpus case into a throwaway tree. Optional 4th arg patches static_detectable.
+eval_copy_case() {
+  local kind="$1" name="$2" dest="$3" sd="${4:-}"
+  mkdir -p "$dest/$kind"
+  cp -R "$CORPUS_SRC/$kind/$name" "$dest/$kind/"
+  if [ -n "$sd" ]; then
+    STATIC_META="$dest/$kind/$name/meta.json" STATIC_VAL="$sd" \
+      node --input-type=module -e '
+        import { readFileSync, writeFileSync } from "node:fs";
+        const file = process.env.STATIC_META;
+        const value = process.env.STATIC_VAL === "true";
+        const j = JSON.parse(readFileSync(file, "utf8"));
+        j.static_detectable = value;
+        writeFileSync(file, JSON.stringify(j, null, 2) + "\n");
+      '
+  fi
+}
+
+# 20. Detection below threshold: 1 static_detectable TP + 1 static_detectable FN
+#     (an AI-only case flipped to true for this fixture) → 50 % < 100.
+#     The real corpus is now 6/6 = 100 %, so --min-detection 100 would no longer fail there.
 {
-  run node "$EVAL_RUN" --no-ai --min-detection 100 --out "$EVAL_OUT/too-high"
+  I1_LOW="$WORK/i1-below"
+  eval_copy_case vuln 007-path-traversal "$I1_LOW"
+  eval_copy_case vuln 011-idor-owner-check-removed "$I1_LOW" true
+  eval_copy_case benign 001-ui-jitter-random "$I1_LOW"
+  run node "$EVAL_RUN" --no-ai --min-detection 100 --corpus "$I1_LOW" --out "$EVAL_OUT/too-high"
   if [ "$RUN_RC" -ne 0 ] \
     && echo "$RUN_OUT" | grep -qE 'THRESHOLD FAIL: detection rate' \
-    && echo "$RUN_OUT" | grep -qE 'below minimum 100'; then
+    && echo "$RUN_OUT" | grep -qE 'below minimum 100' \
+    && echo "$RUN_OUT" | grep -qE 'static_detectable'; then
     case_result "I1: detection below --min-detection exits non-zero naming threshold" 1
   else
     case_result "I1: detection below --min-detection exits non-zero naming threshold" 0 \
@@ -845,14 +871,26 @@ mkdir -p "$EVAL_OUT"
   fi
 }
 
-# 21. Counter: documented threshold (50) holds on current corpus → exit 0.
+# 21. Counter: --no-ai rate ignores static_detectable:false. 1 TP + 2 AI-only FN
+#     would be 1/3 = 33 % (fail at 50) if those FNs counted; with the new denom it is
+#     1/1 = 100 % and must pass. Also the real corpus still holds the documented 50 %.
 {
+  I1_SEM="$WORK/i1-semantics"
+  eval_copy_case vuln 007-path-traversal "$I1_SEM"
+  eval_copy_case vuln 008-unbounded-recursion "$I1_SEM"
+  eval_copy_case vuln 011-idor-owner-check-removed "$I1_SEM"
+  eval_copy_case benign 001-ui-jitter-random "$I1_SEM"
+  run node "$EVAL_RUN" --no-ai --min-detection 50 --max-fp 5 --corpus "$I1_SEM" --out "$EVAL_OUT/semantics"
+  SEM_RC="$RUN_RC"
+  SEM_OUT="$RUN_OUT"
   run node "$EVAL_RUN" --no-ai --min-detection 50 --max-fp 5 --out "$EVAL_OUT/documented"
-  if [ "$RUN_RC" -eq 0 ]; then
-    case_result "I1-counter: documented thresholds pass (exit 0)" 1
+  if [ "$SEM_RC" -eq 0 ] \
+    && echo "$SEM_OUT" | grep -qE 'Detection 100\.0 % \(1/1 static_detectable\)' \
+    && [ "$RUN_RC" -eq 0 ]; then
+    case_result "I1-counter: --no-ai rate is over static_detectable only (exit 0)" 1
   else
-    case_result "I1-counter: documented thresholds pass (exit 0)" 0 \
-      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+    case_result "I1-counter: --no-ai rate is over static_detectable only (exit 0)" 0 \
+      "sem_rc=$SEM_RC real_rc=$RUN_RC sem=$(short "$SEM_OUT") real=$(short "$RUN_OUT")"
   fi
 }
 

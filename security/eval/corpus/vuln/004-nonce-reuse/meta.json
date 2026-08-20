@@ -5,5 +5,6 @@
   "severity": "critical",
   "summary": "Counter-derived nonce resets to zero on reconnect, so two messages in different sessions share a nonce under the same key.",
   "ground_truth": { "file": "src/channel.ts", "lines": [4, 14] },
-  "must_detect": true
+  "must_detect": true,
+  "static_detectable": false
 }

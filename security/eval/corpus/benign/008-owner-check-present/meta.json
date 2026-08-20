@@ -1,0 +1,8 @@
+{
+  "id": "benign-008-owner-check-present",
+  "class": "access-control",
+  "decoy": "getDocument refactored (logging) while assertOwner remains",
+  "targets_check": "owner-check / IDOR lens",
+  "must_detect": false,
+  "ground_truth": { "file": "src/docs.ts", "lines": [2, 6] }
+}

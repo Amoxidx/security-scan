@@ -7,7 +7,8 @@
  * same shape a pull request has. Then it compares what the gate said against ground truth.
  *
  * Four numbers come out, and all four matter:
- *   detection rate   caught / must_detect cases
+ *   detection rate   full mode:  caught / must_detect vuln cases
+ *                    --no-ai:    caught / static_detectable must_detect vuln cases
  *   FALSE POSITIVE   benign cases that were blocked   <- the acceptance criterion
  *   wall clock       p95 per case
  *   stages run       which stages actually executed (the AI stage skips without a provider)
@@ -21,6 +22,11 @@
  * Three stages run per case: the static gate, the scanners (Semgrep, OSV, Gitleaks via
  * SARIF), and the AI review. --no-scan and --no-ai switch a stage off, which is how the
  * contribution of each one is isolated.
+ *
+ * --no-ai is the static scanner floor. Vuln cases with static_detectable: false are
+ * inter-procedural / logic bugs the static stage is not expected to find; they are
+ * excluded from the --no-ai detection denominator (not counted as FN). Full mode
+ * (AI on) still measures every must_detect vuln — that is the world-class bar.
  *
  * Use --no-ai whenever a coding agent CLI happens to be on PATH — the harness would
  * otherwise fire real agent calls for every case, which takes minutes each.
@@ -40,9 +46,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
 
 // Documented Phase-0 targets (implementation-plan §3). Enforced at process exit.
-// Override with --min-detection / --max-fp. Do NOT add a p95 wall-clock threshold:
-// the same revision measures 1.3 s–1.8 s depending on machine load; a time gate in CI
-// would be a flaky detector, not a regression signal.
+// --no-ai applies DEFAULT_MIN_DETECTION to static_detectable vuln cases only;
+// full mode applies it to every must_detect vuln. Override with --min-detection /
+// --max-fp. Do NOT add a p95 wall-clock threshold: the same revision measures
+// 1.3 s–1.8 s depending on machine load; a time gate in CI would be a flaky
+// detector, not a regression signal.
 const DEFAULT_MIN_DETECTION = 50;
 const DEFAULT_MAX_FP = 5;
 
@@ -71,6 +79,10 @@ function loadCases() {
       const metaPath = join(caseDir, 'meta.json');
       if (!existsSync(metaPath)) continue;
       const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+      if (kind === 'vuln' && typeof meta.static_detectable !== 'boolean') {
+        console.error(`${metaPath}: vuln case must set static_detectable (boolean)`);
+        process.exit(1);
+      }
       cases.push({ ...meta, kind, dir: caseDir, name });
     }
   }
@@ -282,8 +294,12 @@ for (const testCase of cases) {
   writeFileSync(join(caseOut, 'ai.log'), aiResult.output);
 
   const mark = { TP: 'PASS', TN: 'PASS', FN: 'MISS', FP: 'FALSE ALARM', BLOCKED_WRONG_REASON: 'WRONG REASON' }[result.outcome];
+  const aiOnlyNote =
+    args.noAi && testCase.must_detect && testCase.static_detectable === false
+      ? '  (AI-only, excluded from --no-ai rate)'
+      : '';
   console.log(
-    `${result.outcome.padEnd(22)} ${mark.padEnd(13)} ${testCase.id}` +
+    `${result.outcome.padEnd(22)} ${mark.padEnd(13)} ${testCase.id}${aiOnlyNote}` +
       (result.outcome === 'FP'
         ? `\n    blocked by: ${[...staticResult.blocks, ...scanResult.findings.map((f) => `${f.ruleId} @${f.file}:${f.line}`)].join('; ')}`
         : '')
@@ -294,6 +310,7 @@ for (const testCase of cases) {
     kind: testCase.kind,
     class: testCase.class || testCase.decoy,
     severity: testCase.severity || null,
+    staticDetectable: testCase.static_detectable === true,
     outcome: result.outcome,
     blocked: result.blocked,
     staticBlocks: staticResult.blocks,
@@ -318,20 +335,39 @@ if (rows.length !== cases.length) {
 
 const vuln = rows.filter((r) => r.kind === 'vuln');
 const benign = rows.filter((r) => r.kind === 'benign');
-const tp = vuln.filter((r) => r.outcome === 'TP').length;
+// --no-ai measures the static scanner floor: only cases declared static_detectable.
+// AI-only cases (static_detectable: false) are expected misses there, not FNs.
+// Full mode keeps every must_detect vuln in the denominator.
+const detectionPool = args.noAi ? vuln.filter((r) => r.staticDetectable) : vuln;
+const tp = detectionPool.filter((r) => r.outcome === 'TP').length;
 const wrong = vuln.filter((r) => r.outcome === 'BLOCKED_WRONG_REASON').length;
 const fp = benign.filter((r) => r.outcome === 'FP').length;
 const times = rows.map((r) => r.ms).sort((a, b) => a - b);
 const p95 = times[Math.min(times.length - 1, Math.floor(times.length * 0.95))];
 
-const detection = (tp / vuln.length) * 100;
+if (detectionPool.length === 0) {
+  console.error(
+    args.noAi
+      ? 'No static_detectable vuln cases; --no-ai detection rate is undefined.'
+      : 'No vuln cases in detection pool.'
+  );
+  process.exit(1);
+}
+
+const detection = (tp / detectionPool.length) * 100;
 const fpRate = (fp / benign.length) * 100;
+const detectionLabel = args.noAi
+  ? `${tp}/${detectionPool.length} static_detectable`
+  : `${tp}/${vuln.length}`;
 
 const summary = {
   timestamp: stamp,
   scannerStageRan: scanEverRan,
   aiStageRan: aiEverRan,
   cases: rows.length,
+  detectionDenom: args.noAi ? 'static_detectable' : 'must_detect',
+  detectionPool: detectionPool.length,
+  staticDetectable: vuln.filter((r) => r.staticDetectable).length,
   detectionRate: Number(detection.toFixed(1)),
   falsePositiveRate: Number(fpRate.toFixed(1)),
   blockedForWrongReason: wrong,
@@ -346,11 +382,13 @@ const md = [
   '',
   aiEverRan
     ? ''
-    : '> **The AI stage did not run** (no model provider reachable). These numbers measure the static gate alone.',
+    : args.noAi
+      ? '> **The AI stage did not run** (--no-ai). Detection is caught / static_detectable cases; AI-only cases are excluded from this rate.'
+      : '> **The AI stage did not run** (no model provider reachable). These numbers measure the static gate alone.',
   '',
   '| Metric | Value | Target |',
   '|---|---|---|',
-  `| Detection rate | ${detection.toFixed(1)} % (${tp}/${vuln.length}) | ≥ ${minDetection} % |`,
+  `| Detection rate | ${detection.toFixed(1)} % (${detectionLabel}) | ≥ ${minDetection} % |`,
   `| **False positive rate** | **${fpRate.toFixed(1)} % (${fp}/${benign.length})** | **≤ ${maxFp} %** |`,
   `| Blocked for the wrong reason | ${wrong} | 0 |`,
   // p95 target is informational only — never enforced (see DEFAULT_MIN_DETECTION comment).
@@ -364,12 +402,19 @@ const md = [
 ].join('\n');
 writeFileSync(join(runDir, 'summary.md'), md);
 
-console.log(`\nDetection ${detection.toFixed(1)} % (${tp}/${vuln.length}) · False positives ${fpRate.toFixed(1)} % (${fp}/${benign.length}) · p95 ${(p95 / 1000).toFixed(1)} s`);
-if (!aiEverRan) console.log('NOTE: AI stage never ran — static gate only.');
+console.log(`\nDetection ${detection.toFixed(1)} % (${detectionLabel}) · False positives ${fpRate.toFixed(1)} % (${fp}/${benign.length}) · p95 ${(p95 / 1000).toFixed(1)} s`);
+if (!aiEverRan) {
+  console.log(
+    args.noAi
+      ? 'NOTE: AI stage never ran — static gate only; rate is over static_detectable cases.'
+      : 'NOTE: AI stage never ran — static gate only.'
+  );
+}
 console.log(`\nResults: ${runDir}`);
 
-// Enforce documented thresholds. --no-ai does not relax them: they apply to whatever
-// static stage combination this run actually measured.
+// Enforce documented thresholds. --no-ai does not relax the percentage: it applies
+// to the static_detectable subset (the static scanner floor). Full mode measures
+// every must_detect vuln.
 let exitCode = 0;
 if (detection < minDetection) {
   console.error(
