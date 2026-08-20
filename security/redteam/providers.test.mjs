@@ -71,6 +71,27 @@ function check(name, ok, detail = '') {
     billed.join(',') === 'anthropic,moonshot,zen' && cfg.providers.ollama?.billed !== true,
     billed.join(','),
   );
+  const promptArgNames = Object.entries(cfg.providers)
+    .filter(([, p]) => p.promptArg === true)
+    .map(([name]) => name);
+  check(
+    'config promptArg only on kimi-cli',
+    promptArgNames.length === 1 && promptArgNames[0] === 'kimi-cli'
+      && cfg.providers['claude-cli']?.promptArg !== true
+      && cfg.providers['codex-cli']?.promptArg !== true,
+    promptArgNames.join(','),
+  );
+  const huntModels = Object.values(cfg.hunt?.models || {});
+  const verifyModels = Array.isArray(cfg.verify?.models) ? cfg.verify.models : [];
+  const kimiStage = [...huntModels, ...verifyModels]
+    .filter((s) => String(s).startsWith('kimi-cli:'));
+  check(
+    'hunt/verify kimi alias is kimi-cli:kimi-code/k3',
+    kimiStage.length > 0
+      && kimiStage.every((s) => s === 'kimi-cli:kimi-code/k3')
+      && !JSON.stringify({ hunt: cfg.hunt, verify: cfg.verify }).includes('kimi-cli:kimi-k3'),
+    JSON.stringify({ hunt: huntModels, verify: verifyModels, kimiStage }),
+  );
 }
 
 const jsonBin = join(work, 'fake-claude-json.sh');
@@ -270,14 +291,14 @@ chmodSync(plainBin, 0o755);
     { maxConcurrency: 1, providers: {} },
     {
       providerName: 'kimi-cli',
-      model: 'kimi-k3',
+      model: 'kimi-code/k3',
       provider: {
         type: 'cli',
         command: [plainBin, '-p'],
         modelFlag: '--model',
         timeoutMs: 8000,
       },
-      spec: 'kimi-cli:kimi-k3',
+      spec: 'kimi-cli:kimi-code/k3',
     },
     'sys',
     'user',
@@ -543,6 +564,121 @@ if (got !== 'Hey Joshua, hi!') {
       && parsed.inputTokens === 9
       && parsed.outputTokens === 140,
     `status=${child.status} stderr=${(child.stderr || '').slice(0, 200)} parent=${parentLog.length} lines=${lines.length}`,
+  );
+}
+
+{
+  const recBin = join(work, 'record-argv-stdin.mjs');
+  const recArgs = join(work, 'record.args');
+  const recStdin = join(work, 'record.stdin');
+  writeFileSync(
+    recBin,
+    `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(recArgs)}, JSON.stringify(process.argv.slice(2)));
+const chunks = [];
+for await (const c of process.stdin) chunks.push(c);
+writeFileSync(${JSON.stringify(recStdin)}, Buffer.concat(chunks));
+process.stdout.write('recorded\\n');
+`,
+  );
+  chmodSync(recBin, 0o755);
+
+  m.resetUsageLog();
+  const promptArgOut = await m.complete(
+    { maxConcurrency: 1, providers: {} },
+    {
+      providerName: 'kimi-cli',
+      model: 'kimi-code/k3',
+      provider: {
+        type: 'cli',
+        command: [recBin, '-p'],
+        modelFlag: '--model',
+        promptArg: true,
+        timeoutMs: 8000,
+      },
+      spec: 'kimi-cli:kimi-code/k3',
+    },
+    'SYS-PROMPT',
+    'USER-PROMPT',
+  );
+  const paArgv = JSON.parse(readFileSync(recArgs, 'utf8'));
+  const paStdin = readFileSync(recStdin, 'utf8');
+  const expectedPrompt = 'SYS-PROMPT\n\n---\n\nUSER-PROMPT';
+  const pIdx = paArgv.indexOf('-p');
+  const mIdx = paArgv.indexOf('--model');
+  check(
+    'promptArg puts prompt on argv after -p, before --model; stdin empty',
+    promptArgOut === 'recorded\n'
+      && pIdx >= 0
+      && paArgv[pIdx + 1] === expectedPrompt
+      && mIdx === pIdx + 2
+      && paArgv[mIdx + 1] === 'kimi-code/k3'
+      && paStdin === '',
+    `argv=${JSON.stringify(paArgv)} stdin=${JSON.stringify(paStdin)} out=${JSON.stringify(promptArgOut)}`,
+  );
+
+  writeFileSync(recArgs, '');
+  writeFileSync(recStdin, '');
+  m.resetUsageLog();
+  const stdinOut = await m.complete(
+    { maxConcurrency: 1, providers: {} },
+    {
+      providerName: 'claude-cli',
+      model: 'claude-opus-5',
+      provider: {
+        type: 'cli',
+        command: [recBin, '-p'],
+        modelFlag: '--model',
+        timeoutMs: 8000,
+      },
+      spec: 'claude-cli:claude-opus-5',
+    },
+    'SYS-PROMPT',
+    'USER-PROMPT',
+  );
+  const clArgv = JSON.parse(readFileSync(recArgs, 'utf8'));
+  const clStdin = readFileSync(recStdin, 'utf8');
+  check(
+    'default CLI still sends prompt on stdin, not as -p value',
+    stdinOut === 'recorded\n'
+      && clArgv[0] === '-p'
+      && clArgv[1] === '--model'
+      && clArgv[2] === 'claude-opus-5'
+      && !clArgv.includes(expectedPrompt)
+      && clStdin === expectedPrompt,
+    `argv=${JSON.stringify(clArgv)} stdin=${JSON.stringify(clStdin)}`,
+  );
+
+  let argMaxErr = '';
+  try {
+    const argMax = Number(spawnSync('getconf', ['ARG_MAX'], { encoding: 'utf8' }).stdout.trim());
+    const huge = 'H'.repeat((Number.isFinite(argMax) ? argMax : 262144) + 4096);
+    await m.complete(
+      { maxConcurrency: 1, providers: {} },
+      {
+        providerName: 'kimi-cli',
+        model: 'kimi-code/k3',
+        provider: {
+          type: 'cli',
+          command: [recBin, '-p'],
+          modelFlag: '--model',
+          promptArg: true,
+          timeoutMs: 8000,
+        },
+        spec: 'kimi-cli:kimi-code/k3',
+      },
+      'sys',
+      huge,
+      { retries: 1 },
+    );
+  } catch (err) {
+    argMaxErr = err.message || String(err);
+  }
+  check(
+    'promptArg over ARG_MAX fails loud without truncating',
+    /ARG_MAX/.test(argMaxErr) && /Refusing to truncate/.test(argMaxErr),
+    argMaxErr.slice(0, 240),
   );
 }
 

@@ -12,7 +12,8 @@
         "-p"
       ],
       "modelFlag": "--model",
-      "timeoutMs": 300000
+      "timeoutMs": 300000,
+      "promptArg": true
     },
     "claude-cli": {
       "type": "cli",
@@ -82,8 +83,8 @@
     ],
     "$comment": "Second channel, not the main one. Semgrep and OSV cover parser and supply-chain better; what stays here is the class no static rule can express \u2014 a fallback that silently lowers a guarantee.",
     "models": {
-      "fallback": "kimi-cli:kimi-k3",
-      "entropy": "kimi-cli:kimi-k3",
+      "fallback": "kimi-cli:kimi-code/k3",
+      "entropy": "kimi-cli:kimi-code/k3",
       "state": "claude-cli:claude-opus-5"
     }
   },
@@ -91,7 +92,7 @@
     "$comment": "k-of-n refutation. A finding survives only if fewer than refuteThreshold refuters break it. The harness never lets a model refute its own finding.",
     "models": [
       "claude-cli:claude-opus-5",
-      "kimi-cli:kimi-k3"
+      "kimi-cli:kimi-code/k3"
     ],
     "refuteThreshold": 2
   },
@@ -119,7 +120,8 @@
     "preferredModels": [
       "qwen3-coder-next:q4_K_M",
       "frob/qwen3-coder-next:80b-a3b-q5_K_M",
-      "qwen3-coder-next"
+      "qwen3-coder-next",
+      "jk-coder"
     ],
     "maxTurns": 6,
     "timeoutS": 300,
