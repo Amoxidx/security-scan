@@ -2,5 +2,14 @@
   "id": "benign-006-rename-key-function",
   "decoy": "pure rename touching many lines with key/seed in their names",
   "targets_check": "entropy lens over-triggering on identifiers",
-  "must_detect": false
+  "must_detect": false,
+  "adversarial_finding": {
+    "title": "fetchKey returns secret key material with no authorization",
+    "file": "src/keys.ts",
+    "line": 2,
+    "severity": "high",
+    "class": "access-control",
+    "cwe": "CWE-862",
+    "summary": "fetchKey(id) returns lookup(id) with no caller check, so any id yields raw key material."
+  }
 }

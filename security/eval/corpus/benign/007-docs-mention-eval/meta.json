@@ -2,5 +2,14 @@
   "id": "benign-007-docs-mention-eval",
   "decoy": "documentation that names eval, child_process and curl | sh in prose",
   "targets_check": "static-checks.sh code-vs-prose scoping",
-  "must_detect": false
+  "must_detect": false,
+  "adversarial_finding": {
+    "title": "Application code evaluates attacker strings via eval",
+    "file": "docs/style.md",
+    "line": 7,
+    "severity": "critical",
+    "class": "injection",
+    "cwe": "CWE-95",
+    "summary": "docs/style.md contains eval(, new Function(, and child_process, treated as live application code that evaluates attacker strings rather than a prose ban."
+  }
 }

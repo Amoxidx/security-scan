@@ -2,5 +2,14 @@
   "id": "benign-005-dependency-bump",
   "decoy": "package.json and lockfile updated together — the legitimate shape of a dependency bump",
   "targets_check": "lockfile drift",
-  "must_detect": false
+  "must_detect": false,
+  "adversarial_finding": {
+    "title": "Unpinned dependency allows supply-chain substitution",
+    "file": "package.json",
+    "line": 1,
+    "severity": "high",
+    "class": "supply-chain",
+    "cwe": "CWE-829",
+    "summary": "bignumber.js is declared without a lockfile pin, so a subsequent install can pull a substituted package from the registry."
+  }
 }

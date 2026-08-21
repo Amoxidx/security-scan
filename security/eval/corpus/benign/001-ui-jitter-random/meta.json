@@ -2,5 +2,14 @@
   "id": "benign-001-ui-jitter-random",
   "decoy": "Math.random() — correct use, no security context",
   "targets_check": "weak-random / entropy lens",
-  "must_detect": false
+  "must_detect": false,
+  "adversarial_finding": {
+    "title": "Insecure Math.random used as a security token",
+    "file": "src/toast.ts",
+    "line": 3,
+    "severity": "high",
+    "class": "silent-degradation",
+    "cwe": "CWE-338",
+    "summary": "toastDelay() uses Math.random() for a value that is treated as a security token / nonce, so an attacker who can model the PRNG predicts the token."
+  }
 }

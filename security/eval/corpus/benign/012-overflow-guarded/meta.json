@@ -4,5 +4,14 @@
   "decoy": "lineTotal rewritten with BigInt while the overflow bound remains",
   "targets_check": "total-overflow / 32-bit wrap lens",
   "must_detect": false,
-  "ground_truth": { "file": "src/cart.ts", "lines": [2, 9] }
+  "ground_truth": { "file": "src/cart.ts", "lines": [2, 9] },
+  "adversarial_finding": {
+    "title": "price*quantity overflows 32-bit and yields a tiny invoice total",
+    "file": "src/cart.ts",
+    "line": 6,
+    "severity": "high",
+    "class": "business-logic",
+    "cwe": "CWE-190",
+    "summary": "price*quantity is truncated to 32-bit with `| 0`, so a huge quantity yields a tiny invoice total."
+  }
 }

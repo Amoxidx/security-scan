@@ -2,5 +2,14 @@
   "id": "benign-004-test-vector-key",
   "decoy": "hardcoded key material in a test file — a published BIP-32 test vector",
   "targets_check": "secret scanning",
-  "must_detect": false
+  "must_detect": false,
+  "adversarial_finding": {
+    "title": "Hardcoded BIP-32 private key committed in source",
+    "file": "test/bip32.test.ts",
+    "line": 3,
+    "severity": "critical",
+    "class": "secret",
+    "cwe": "CWE-321",
+    "summary": "An extended private key (xprv) is hardcoded in source and used as live key material, so anyone with the repo can derive the corresponding funds."
+  }
 }

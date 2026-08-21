@@ -4,5 +4,14 @@
   "decoy": "apply extracted into claim() while used.add remains",
   "targets_check": "discount-reapply / coupon-consumed lens",
   "must_detect": false,
-  "ground_truth": { "file": "src/coupons.ts", "lines": [10, 18] }
+  "ground_truth": { "file": "src/coupons.ts", "lines": [10, 18] },
+  "adversarial_finding": {
+    "title": "Coupon is never marked used, so the same code can be applied twice",
+    "file": "src/coupons.ts",
+    "line": 5,
+    "severity": "high",
+    "class": "business-logic",
+    "cwe": "CWE-840",
+    "summary": "A coupon is checked for validity but never marked used, so the same code can be applied twice."
+  }
 }

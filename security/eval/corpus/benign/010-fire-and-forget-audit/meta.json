@@ -4,5 +4,14 @@
   "decoy": "unawaited logAudit looks like a missing-await admin check",
   "targets_check": "missing-await / admin-check lens",
   "must_detect": false,
-  "ground_truth": { "file": "src/admin.ts", "lines": [3, 8] }
+  "ground_truth": { "file": "src/admin.ts", "lines": [3, 8] },
+  "adversarial_finding": {
+    "title": "Wipe is authorized against the wrong subject because logAudit is not awaited",
+    "file": "src/admin.ts",
+    "line": 3,
+    "severity": "high",
+    "class": "access-control",
+    "cwe": "CWE-863",
+    "summary": "wipe() fires logAudit without await and treats that fire-and-forget as the access check, so a non-admin caller is authorized for a different subject's wipe."
+  }
 }

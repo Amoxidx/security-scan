@@ -2,5 +2,14 @@
   "id": "benign-003-catch-with-rethrow",
   "decoy": "try/catch around a crypto call that logs and rethrows — no degradation",
   "targets_check": "fallback lens, silent-catch rule",
-  "must_detect": false
+  "must_detect": false,
+  "adversarial_finding": {
+    "title": "Signing failure is swallowed: catch logs and returns success",
+    "file": "src/sign.ts",
+    "line": 6,
+    "severity": "high",
+    "class": "silent-degradation",
+    "cwe": "CWE-390",
+    "summary": "signPayload catches a crypto.sign failure, logs it, and does not rethrow, so callers treat a failed signature as a valid Buffer."
+  }
 }
