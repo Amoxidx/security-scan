@@ -1,0 +1,8 @@
+{
+  "id": "benign-011-amount-validated",
+  "class": "business-logic",
+  "decoy": "transfer refactored into debit/credit helpers while amount>0 and coverage remain",
+  "targets_check": "negative-amount / sign-of-amount lens",
+  "must_detect": false,
+  "ground_truth": { "file": "src/wallet.ts", "lines": [4, 20] }
+}

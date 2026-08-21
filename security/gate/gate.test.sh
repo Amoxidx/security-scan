@@ -824,7 +824,7 @@ write_status_only_sarif() {
   fi
 }
 
-# ---------------------------------------------------------------- 20–23: eval thresholds (I1)
+# ---------------------------------------------------------------- 20–24: eval thresholds (I1)
 
 echo "=== eval thresholds (I1) ==="
 
@@ -915,6 +915,64 @@ eval_copy_case() {
     case_result "I1: FP rate above --max-fp exits non-zero naming threshold" 1
   else
     case_result "I1: FP rate above --max-fp exits non-zero naming threshold" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# 24. Real-corpus meta.json integrity. eval/run.mjs:341 filters --no-ai on
+#     static_detectable; a vuln without a boolean (missing or string) silently
+#     drops out of the denominator. Walk every checked-in case.
+{
+  run env CORPUS="$CORPUS_SRC" node --input-type=module -e '
+    import { readFileSync, readdirSync, existsSync } from "node:fs";
+    import { join } from "node:path";
+    const corpus = process.env.CORPUS;
+    const nonempty = (v) => typeof v === "string" && v.trim() !== "";
+    const errors = [];
+    for (const kind of ["vuln", "benign"]) {
+      const kindDir = join(corpus, kind);
+      if (!existsSync(kindDir)) continue;
+      for (const name of readdirSync(kindDir).sort()) {
+        const metaPath = join(kindDir, name, "meta.json");
+        if (!existsSync(metaPath)) continue;
+        const rel = `${kind}/${name}/meta.json`;
+        let meta;
+        try {
+          meta = JSON.parse(readFileSync(metaPath, "utf8"));
+        } catch (err) {
+          errors.push(`${rel}: invalid JSON (${err.message})`);
+          continue;
+        }
+        if (!nonempty(meta.id)) errors.push(`${rel}: id: missing or empty`);
+        else if (meta.id !== `${kind}-${name}`) {
+          errors.push(`${rel}: id: want "${kind}-${name}", got ${JSON.stringify(meta.id)}`);
+        }
+        if (kind === "vuln") {
+          for (const field of ["class", "cwe", "severity"]) {
+            if (!nonempty(meta[field])) errors.push(`${rel}: ${field}: missing or empty`);
+          }
+          if (!Object.prototype.hasOwnProperty.call(meta, "static_detectable")) {
+            errors.push(`${rel}: static_detectable: missing`);
+          } else if (typeof meta.static_detectable !== "boolean") {
+            errors.push(
+              `${rel}: static_detectable: want boolean, got ${JSON.stringify(meta.static_detectable)} (${typeof meta.static_detectable})`
+            );
+          }
+        } else if (Object.prototype.hasOwnProperty.call(meta, "class") && !nonempty(meta.class)) {
+          errors.push(`${rel}: class: empty`);
+        }
+      }
+    }
+    if (errors.length) {
+      console.error(errors.join("\n"));
+      process.exit(1);
+    }
+    console.log("corpus meta integrity ok");
+  '
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "I1: corpus meta integrity" 1
+  else
+    case_result "I1: corpus meta integrity" 0 \
       "rc=$RUN_RC out=$(short "$RUN_OUT")"
   fi
 }

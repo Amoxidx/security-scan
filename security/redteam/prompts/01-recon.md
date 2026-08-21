@@ -35,7 +35,7 @@ The question you are answering for every candidate file is not "is this code cor
       "why": "<what security guarantee this code carries>",
       "blast_radius": "critical|high|medium|low",
       "worst_case": "<what an attacker gains if this misbehaves>",
-      "suggested_lenses": ["entropy", "parser", "state", "fallback", "supply-chain", "access-control"]
+      "suggested_lenses": ["entropy", "parser", "state", "fallback", "supply-chain", "access-control", "business-logic"]
     }
   ]
 }

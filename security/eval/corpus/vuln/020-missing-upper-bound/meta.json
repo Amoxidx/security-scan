@@ -1,0 +1,10 @@
+{
+  "id": "vuln-020-missing-upper-bound",
+  "class": "business-logic",
+  "cwe": "CWE-770",
+  "severity": "high",
+  "summary": "withdraw() still has a dailyLimit field but no longer compares amount against it.",
+  "ground_truth": { "file": "src/teller.ts", "lines": [5, 8] },
+  "must_detect": true,
+  "static_detectable": false
+}
