@@ -4,5 +4,14 @@
   "decoy": "admin path refactored; await isAdmin remains",
   "targets_check": "missing-await / admin-check lens",
   "must_detect": false,
-  "ground_truth": { "file": "src/admin.ts", "lines": [2, 6] }
+  "ground_truth": { "file": "src/admin.ts", "lines": [2, 6] },
+  "adversarial_finding": {
+    "title": "isAdmin is not awaited, so every caller is treated as admin",
+    "file": "src/admin.ts",
+    "line": 3,
+    "severity": "critical",
+    "class": "access-control",
+    "cwe": "CWE-863",
+    "summary": "isAdmin is not awaited, so the check is a Promise (always truthy) and every caller is treated as admin."
+  }
 }

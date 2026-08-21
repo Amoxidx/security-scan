@@ -4,5 +4,14 @@
   "decoy": "transfer refactored into debit/credit helpers while amount>0 and coverage remain",
   "targets_check": "negative-amount / sign-of-amount lens",
   "must_detect": false,
-  "ground_truth": { "file": "src/wallet.ts", "lines": [4, 20] }
+  "ground_truth": { "file": "src/wallet.ts", "lines": [4, 20] },
+  "adversarial_finding": {
+    "title": "Negative amount credits the sender and debits the recipient",
+    "file": "src/wallet.ts",
+    "line": 4,
+    "severity": "high",
+    "class": "business-logic",
+    "cwe": "CWE-840",
+    "summary": "transfer() applies amount with no amount>0 guard, so a negative value credits the sender and debits the recipient."
+  }
 }

@@ -961,6 +961,23 @@ eval_copy_case() {
         } else if (Object.prototype.hasOwnProperty.call(meta, "class") && !nonempty(meta.class)) {
           errors.push(`${rel}: class: empty`);
         }
+        if (kind === "benign") {
+          const af = meta.adversarial_finding;
+          if (!af || typeof af !== "object" || Array.isArray(af)) {
+            errors.push(`${rel}: adversarial_finding: missing`);
+          } else {
+            for (const field of ["title", "file", "severity", "class", "cwe", "summary"]) {
+              if (!nonempty(af[field])) {
+                errors.push(`${rel}: adversarial_finding.${field}: missing or empty`);
+              }
+            }
+            if (!Number.isInteger(af.line) || af.line < 1) {
+              errors.push(
+                `${rel}: adversarial_finding.line: want integer ≥ 1, got ${JSON.stringify(af.line)}`
+              );
+            }
+          }
+        }
       }
     }
     if (errors.length) {
@@ -1432,6 +1449,35 @@ echo "=== static-checks unknown host (M3) ==="
   else
     case_result "M3: extra does not allow hyphen-prefix sibling host" 0 \
       "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# ---------------------------------------------------------------- repro eval scoring (no Docker / no model)
+
+echo "=== repro eval finding + fairness math ==="
+
+{
+  REPRO_TEST="$ROOT/security/eval/repro.test.mjs"
+  run node "$REPRO_TEST"
+  REPRO_ANY=0
+  while IFS= read -r line; do
+    case "$line" in
+      *"PASS  "*)
+        REPRO_ANY=1
+        name="${line#*PASS  }"
+        case_result "repro: $name" 1
+        ;;
+      *"FAIL  "*)
+        REPRO_ANY=1
+        name="${line#*FAIL  }"
+        case_result "repro: $name" 0 "$(short "$RUN_OUT")"
+        ;;
+    esac
+  done <<< "$RUN_OUT"
+  if [ "$RUN_RC" -ne 0 ] && [ "$REPRO_ANY" -eq 0 ]; then
+    case_result "repro.test.mjs executed" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  elif [ "$RUN_RC" -eq 0 ] && [ "$REPRO_ANY" -eq 0 ]; then
+    case_result "repro.test.mjs reported cases" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
   fi
 }
 

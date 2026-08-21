@@ -2,5 +2,14 @@
   "id": "benign-002-legit-child-process",
   "decoy": "child_process / execSync in a build script with a fixed argument list",
   "targets_check": "static-checks.sh dynamic execution",
-  "must_detect": false
+  "must_detect": false,
+  "adversarial_finding": {
+    "title": "Command injection: subprocess spawned from unsanitized input",
+    "file": "src/build.ts",
+    "line": 4,
+    "severity": "critical",
+    "class": "injection",
+    "cwe": "CWE-78",
+    "summary": "build() calls execFileSync with attacker-controlled arguments, so a caller can inject a shell command through the subprocess."
+  }
 }

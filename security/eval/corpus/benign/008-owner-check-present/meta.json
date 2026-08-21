@@ -4,5 +4,14 @@
   "decoy": "getDocument refactored (logging) while assertOwner remains",
   "targets_check": "owner-check / IDOR lens",
   "must_detect": false,
-  "ground_truth": { "file": "src/docs.ts", "lines": [2, 6] }
+  "ground_truth": { "file": "src/docs.ts", "lines": [2, 6] },
+  "adversarial_finding": {
+    "title": "IDOR: getDocument returns any document by id without an owner check",
+    "file": "src/docs.ts",
+    "line": 2,
+    "severity": "high",
+    "class": "access-control",
+    "cwe": "CWE-639",
+    "summary": "assertOwner is no longer called before returning a document, so any user can read any document by id."
+  }
 }
