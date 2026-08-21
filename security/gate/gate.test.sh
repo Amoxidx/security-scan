@@ -1452,6 +1452,20 @@ echo "=== static-checks unknown host (M3) ==="
   fi
 }
 
+# ---------------------------------------------------------------- hunt model selection tests
+
+echo "=== hunt model selection ==="
+
+{
+  HUNT_MODELS_TEST="$ROOT/security/redteam/hunt-models.test.mjs"
+  run node "$HUNT_MODELS_TEST"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "hunt-models.test.mjs" 1
+  else
+    case_result "hunt-models.test.mjs" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
 # ---------------------------------------------------------------- repro eval scoring (no Docker / no model)
 
 echo "=== repro eval finding + fairness math ==="

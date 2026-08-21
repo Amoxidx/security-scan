@@ -26,6 +26,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { complete as providerComplete, resolveModel, listUnavailable } from './providers.mjs';
+import { completeHunt } from './hunt-models.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, 'prompts');
@@ -115,27 +116,20 @@ function parseJson(text, fallback = null) {
 
 /** Per-lens hunt outcome: either findings or a recorded failure. */
 async function hunt(lens) {
-  const spec = config.hunt.models[lens];
-  const target = spec && resolveModel(config, spec);
-  if (!target) return { lens, ok: false, error: 'no reachable model', findings: [] };
   const user = huntPrompt
     .replace(/\{\{LENS\}\}/g, lens)
     .replace('{{TARGET}}', 'The unified diff below. Review the changed lines and what they reach.')
     .replace('{{CONTEXT}}', wrapUntrusted(diffText));
 
-  try {
-    const out = await providerComplete(config, target, systemPrompt, user);
-    const parsed = parseJson(out, { findings: [] });
-    const findings = Array.isArray(parsed) ? parsed : parsed.findings || [];
-    return {
-      lens,
-      ok: true,
-      findings: findings.map((f) => ({ ...f, lens, huntModel: target.spec })),
-    };
-  } catch (err) {
-    console.error(`hunt[${lens}] failed: ${err.message}`);
-    return { lens, ok: false, error: err.message, findings: [] };
-  }
+  return completeHunt({
+    config,
+    lens,
+    user,
+    systemPrompt,
+    resolveModel,
+    complete: providerComplete,
+    parseJson,
+  });
 }
 
 /** Same root cause reported by two lenses is one finding, not two. */
@@ -261,6 +255,7 @@ async function main() {
   // Report what is and is not reachable before spending anything.
   const referenced = [...new Set([
     ...Object.values(config.hunt.models),
+    ...(config.hunt.fallbackModels || []),
     ...config.verify.models,
     config.report.model,
   ])];
@@ -274,7 +269,8 @@ async function main() {
   }
   const activeLenses = config.hunt.lenses.filter((l) => {
     const s = config.hunt.models[l];
-    return Boolean(s) && Boolean(resolveModel(config, s));
+    return Boolean(s) && [s, ...(config.hunt.fallbackModels || [])]
+      .some((candidate) => resolveModel(config, candidate));
   });
   const hasVerifier = config.verify.models.some((s) => resolveModel(config, s));
   if (!hasVerifier) {
