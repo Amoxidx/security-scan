@@ -4,12 +4,12 @@
   "targets_check": "entropy lens over-triggering on identifiers",
   "must_detect": false,
   "adversarial_finding": {
-    "title": "fetchKey returns secret key material with no authorization",
+    "title": "fetchKeyOrThrow returns an empty key instead of throwing on a missing lookup",
     "file": "src/keys.ts",
-    "line": 2,
+    "line": 7,
     "severity": "high",
-    "class": "access-control",
-    "cwe": "CWE-862",
-    "summary": "fetchKey(id) returns lookup(id) with no caller check, so any id yields raw key material."
+    "class": "improper-validation",
+    "cwe": "CWE-252",
+    "summary": "fetchKeyOrThrow does not act on the result of fetchKey, so when lookup returns an empty string it hands that empty key back to the caller instead of throwing, and callers proceed with invalid key material."
   }
 }
