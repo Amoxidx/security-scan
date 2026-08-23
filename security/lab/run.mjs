@@ -2,7 +2,7 @@
 /**
  * Local repro / fuzz / trace lab — manual only, never CI.
  *
- * Takes one finding (+ staged code), drives a local model (default: qwen3-coder-next via
+ * Takes one finding (+ staged code), drives a local model (default: jk-coder (local Qwen3-Coder-Next) via
  * Ollama's OpenAI-compatible endpoint) through a hard-capped execute/conclude loop, runs
  * every proposed script inside an ephemeral docker/colima sandbox, and writes a report
  * with verdict reproduced | not-reproduced | inconclusive.
@@ -16,7 +16,7 @@
  *     --code-dir <dir> \
  *     [--diff <file>] \
  *     [--out <dir>] \
- *     [--model ollama:qwen3-coder-next:q4_K_M] \
+ *     [--model ollama:jk-coder] \
  *     [--max-turns 6] \
  *     [--timeout-s 600] \
  *     [--sandbox-timeout-s 60] \
@@ -45,6 +45,7 @@ import {
   unavailableReason,
 } from '../redteam/providers.mjs';
 import { ensureImage, runInSandbox, DEFAULT_IMAGE } from './sandbox.mjs';
+import { DEFAULT_LAB_MODEL } from '../studio/lab-model.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -80,7 +81,7 @@ function usage(msg) {
   --diff <file>              Optional unified diff for context
   --out <dir>                Report directory (default: security-lab-report)
   --config <file>            Provider config (default: security/redteam/config.json)
-  --model <spec>             provider:model (default: ollama:qwen3-coder-next:q4_K_M)
+  --model <spec>             provider:model (default: ollama:jk-coder)
   --max-turns <n>            Hard iteration cap (default: 6)
   --timeout-s <n>            Wall-clock timeout for the whole run (default: 600)
   --sandbox-timeout-s <n>    Per-script timeout inside the container (default: 60)
@@ -115,7 +116,7 @@ if (!existsSync(configPath)) usage(`config not found: ${configPath}`);
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
 const labCfg = config.lab || {};
-const modelSpec = args.model || labCfg.model || 'ollama:qwen3-coder-next:q4_K_M';
+const modelSpec = args.model || labCfg.model || DEFAULT_LAB_MODEL;
 const maxTurns = Math.max(0, Number(args['max-turns'] ?? labCfg.maxTurns ?? 6));
 const timeoutS = Math.max(1, Number(args['timeout-s'] ?? labCfg.timeoutS ?? 600));
 const sandboxTimeoutS = Math.max(1, Number(args['sandbox-timeout-s'] ?? 60));

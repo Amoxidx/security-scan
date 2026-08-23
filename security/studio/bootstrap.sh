@@ -16,8 +16,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-# Preferred lab model tag on Studio (must match security/redteam/config.json → lab.model).
-LAB_MODEL_DEFAULT="${SECURITY_LAB_MODEL:-qwen3-coder-next:q4_K_M}"
+# Preferred lab model tag (must match security/redteam/config.json → lab.model).
+LAB_MODEL_DEFAULT="${SECURITY_LAB_MODEL:-jk-coder}"
 
 CHECK_ONLY=0
 INSTALL_AUTO=0
@@ -337,7 +337,7 @@ check_lab() {
         fi
       fi
     fi
-    # Prefer the exact Studio tag, then any qwen3-coder-next variant.
+    # Prefer the named default (jk-coder), then any qwen3-coder-next variant.
     if ollama_has_model "$LAB_MODEL_DEFAULT"; then
       ok "lab model available: $LAB_MODEL_DEFAULT"
     elif ollama_has_model 'qwen3-coder-next'; then

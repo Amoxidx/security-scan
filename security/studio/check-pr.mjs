@@ -114,7 +114,7 @@ Options:
   --base <ref>          Diff base (default from target)
   --host-allow-extra    Extra host regex for static gate (repeatable)
   --out <dir>           Report directory
-  --lab-model <spec>    Default from config.lab.model (ollama:qwen3-coder-next:q4_K_M)
+  --lab-model <spec>    Default from config.lab.model (ollama:jk-coder)
   --max-lab <n>         Cap lab findings (default: config.lab.maxFindings or 5)
   --lab-timeout-s <n>   Per-finding lab wall clock (default: config.lab.timeoutS or 300)
   --lab-max-turns <n>   Lab iteration cap (default: config.lab.maxTurns or 6)

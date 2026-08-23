@@ -128,8 +128,8 @@ und Exit-Code **2**. „Kein Ergebnis“ ist **nicht** „sicher“ und wird auc
 brew install ollama
 brew services start ollama   # oder: $(brew --prefix ollama)/bin/ollama serve
 
-# Quant: q4_K_M (~46 GB RAM). q8_0 (~85 GB) nur wenn gemessen ≥20 GB Puffer frei bleiben.
-ollama pull qwen3-coder-next:q4_K_M
+# Quant: Q8_0 (ollama show jk-coder).
+ollama pull jk-coder
 
 colima start                 # docker-CLI spricht danach den colima-Socket
 docker pull node:22-bookworm-slim

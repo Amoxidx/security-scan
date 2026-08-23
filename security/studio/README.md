@@ -94,7 +94,7 @@ node security/studio/check-pr.mjs --list-targets
 3. **Studio env** — PATH/docker/colima/ollama defaults injected for non-interactive shells; `DOCKER_BIN` resolved even when OrbStack is off-PATH.
 4. **Coding-agent CLI via GUI keychain** — SSH cannot read the login keychain. `check-pr` sets `SECURITY_CLAUDE_WRAPPER` to `claude-via-gui.sh`, which re-runs the agent in the Aqua `gui/$UID` domain when direct auth is false.
 5. **Lab only for survivors** — Qwen sandbox runs only on findings that would block, capped by `--max-lab` / `config.lab.maxFindings`.
-6. **Lab model auto-pick** — `config.lab.model` (`ollama:qwen3-coder-next:q4_K_M`) with `preferredModels` fallback if the primary tag is not pulled.
+6. **Lab model auto-pick** — `config.lab.model` (`ollama:jk-coder`) with `preferredModels` fallback if the primary tag is not pulled.
 
 ## Subscription-agent auth from SSH
 

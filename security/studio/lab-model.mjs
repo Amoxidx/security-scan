@@ -5,7 +5,7 @@
 
 import { spawnSync } from 'node:child_process';
 
-export const DEFAULT_LAB_MODEL = 'ollama:qwen3-coder-next:q4_K_M';
+export const DEFAULT_LAB_MODEL = 'ollama:jk-coder';
 export const OLLAMA_TAGS_URL = 'http://127.0.0.1:11434/api/tags';
 
 /** List local Ollama model names via the tags API (sync, best-effort). */
