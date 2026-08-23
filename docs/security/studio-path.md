@@ -13,7 +13,7 @@ Zwei Stufen **können dort nicht** laufen, ohne die Trust-Boundary zu brechen:
    darf keinen Checkout-Token im selben Job sehen
 
 Studio (`dfxai-remote`) hat genau diesen Stack: Node 22+, Ollama
-`qwen3-coder-next:q4_K_M`, Colima, Codex, coding-agent CLI (Max, Login-Keychain), Semgrep,
+`jk-coder`, Colima, Codex, coding-agent CLI (Max, Login-Keychain), Semgrep,
 OSV, Gitleaks.
 
 **Coding-agent CLI unter SSH:** OAuth liegt in der Login-Keychain. Nicht-interaktive
@@ -91,7 +91,7 @@ security/studio/auto-pr-check.sh --on     # wieder an
 |---|---|---|
 | Codex CLI | Triage + Final Judge | `codex-cli:gpt-5.6-sol` |
 | Claude CLI | Adversarial Refuter | `claude-cli:claude-opus-5` |
-| Ollama Qwen | Machine Evidence (Lab) | `ollama:qwen3-coder-next:q4_K_M` |
+| Ollama Qwen | Machine Evidence (Lab) | `ollama:jk-coder` |
 | Colima + Docker | Sandbox (`--network none`) | `node:22-bookworm-slim` |
 
 Konfiguration: `security/redteam/config.json` → `lab.model` / `lab.preferredModels`.
@@ -107,7 +107,7 @@ Bootstrap + `studio.test.sh` + Lab-Smoke auf Studio:
 
 | Datum | Was | Ergebnis |
 |---|---|---|
-| 2026-08-12 | Lab gegen `006-proto-pollution/**after**` (Vuln-Tree) mit `qwen3-coder-next:q4_K_M` | `reproduced`, Exit 0, 2 Turns, ~5 s |
+| 2026-08-12 | Lab gegen `006-proto-pollution/**after**` (Vuln-Tree) mit `jk-coder` | `reproduced`, Exit 0, 2 Turns, ~5 s |
 | 2026-08-12 | `studio.test.sh` | 11/11 |
 | 2026-08-12 | `bootstrap.sh --check` | ok=16 warn=1 fail=0 (kimi optional) |
 

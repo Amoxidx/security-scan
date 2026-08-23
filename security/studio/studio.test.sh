@@ -980,7 +980,7 @@ async function main() {
   const configPath = process.argv[3];
   const m = await import(pathToFileURL(modPath).href);
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  if (config.lab?.model !== 'ollama:qwen3-coder-next:q4_K_M') {
+  if (config.lab?.model !== 'ollama:jk-coder') {
     console.error('config.lab.model missing/wrong', config.lab);
     process.exit(1);
   }
@@ -1001,26 +1001,47 @@ async function main() {
   }
   // No live tags: empty available list → configured default.
   const offline = m.resolveLabModelSpec(
-    { lab: { model: 'ollama:qwen3-coder-next:q4_K_M', preferredModels: [] } },
+    { lab: { model: 'ollama:jk-coder', preferredModels: [] } },
     null,
     { available: [] },
   );
-  if (offline !== 'ollama:qwen3-coder-next:q4_K_M') {
+  if (offline !== 'ollama:jk-coder') {
     console.error('offline default failed', offline);
     process.exit(1);
   }
-  // configured missing, preferred jk-coder matches jk-coder:latest
+  // Primary path: configured jk-coder matches via has() (jk-coder:latest);
+  // resolveLabModelSpec returns toOllamaSpec(configuredName), not the tagged hit.
   const macpro = ['jk-coder:latest', 'gpt-oss:20b'];
-  const preferredJk = m.resolveLabModelSpec(config, null, { available: macpro });
-  if (preferredJk !== 'ollama:jk-coder:latest') {
-    console.error('preferred jk-coder pick failed', preferredJk);
+  const primaryJk = m.resolveLabModelSpec(config, null, { available: macpro });
+  if (primaryJk !== 'ollama:jk-coder') {
+    console.error('primary jk-coder pick failed', primaryJk);
     process.exit(1);
   }
-  // configured present: general pull of qwen3, no jk-coder
+  // Fallback path: configured jk-coder missing, preferred qwen3-coder-next:q4_K_M hits.
   const general = ['qwen3-coder-next:q4_K_M', 'gpt-oss:20b'];
   const defaultQwen = m.resolveLabModelSpec(config, null, { available: general });
   if (defaultQwen !== 'ollama:qwen3-coder-next:q4_K_M') {
-    console.error('qwen3 default pick failed', defaultQwen);
+    console.error('qwen3 preferred fallback failed', defaultQwen);
+    process.exit(1);
+  }
+  // preferredModels fallback: inline model missing from available, jk-coder from preferred.
+  const preferredJk = m.resolveLabModelSpec(
+    {
+      lab: {
+        model: 'ollama:qwen3-coder-next:q4_K_M',
+        preferredModels: [
+          'qwen3-coder-next:q4_K_M',
+          'frob/qwen3-coder-next:80b-a3b-q5_K_M',
+          'qwen3-coder-next',
+          'jk-coder',
+        ],
+      },
+    },
+    null,
+    { available: macpro },
+  );
+  if (preferredJk !== 'ollama:jk-coder:latest') {
+    console.error('preferred jk-coder pick failed', preferredJk);
     process.exit(1);
   }
   // Without jk-coder in preferredModels, macpro list must stay on configured qwen3.
@@ -1043,7 +1064,7 @@ async function main() {
     process.exit(1);
   }
   console.log(JSON.stringify({
-    explicit, offline, preferredJk, defaultQwen, noJkPref,
+    explicit, offline, primaryJk, preferredJk, defaultQwen, noJkPref,
     configDefault: config.lab.model,
     preferred,
   }));

@@ -45,6 +45,7 @@ import {
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_LAB_MODEL } from '../studio/lab-model.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -395,7 +396,7 @@ export function main(argv = process.argv.slice(2)) {
   }
 
   const labCfg = config.lab || {};
-  const modelSpec = args.model || labCfg.model || 'ollama:qwen3-coder-next:q4_K_M';
+  const modelSpec = args.model || labCfg.model || DEFAULT_LAB_MODEL;
   const timeoutS = Math.max(1, Number(args['timeout-s'] ?? labCfg.timeoutS ?? 300));
   const maxTurns = Math.max(0, Number(args['max-turns'] ?? labCfg.maxTurns ?? 6));
   const sandboxTimeoutS = args['sandbox-timeout-s'] != null

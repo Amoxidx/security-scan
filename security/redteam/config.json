@@ -124,8 +124,8 @@
     "model": "codex-cli:gpt-5.6-sol"
   },
   "lab": {
-    "$comment": "Local machine-evidence stage (security/lab + security/studio). Never CI. Default is Studio's Ollama Qwen3-Coder-Next. preferredModels is tried in order when the primary tag is not pulled.",
-    "model": "ollama:qwen3-coder-next:q4_K_M",
+    "$comment": "Local machine-evidence stage (security/lab + security/studio). Never CI. Default is jk-coder, the local Ollama registration of Qwen3-Coder-Next 80B-A3B MoE. preferredModels is the fallback when jk-coder is not pulled.",
+    "model": "ollama:jk-coder",
     "preferredModels": [
       "qwen3-coder-next:q4_K_M",
       "frob/qwen3-coder-next:80b-a3b-q5_K_M",
