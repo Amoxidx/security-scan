@@ -44,26 +44,54 @@ Die Herleitung im Detail:
 | 0 — Messgrundlage | **fertig**, Baseline gemessen |
 | 1 — Scanner + SARIF (Semgrep, OSV, Gitleaks, CodeQL) | **fertig**, in CI verifiziert |
 | 2 — LLM-Triage auf SARIF | **gebaut**, Wirkung noch ungemessen |
-| 3 — Lens-Kanal | **fertig**, auf `fallback`/`entropy`/`state` reduziert |
-| 4 — Beweisstufe | **gebaut**, 5/5 Korpus-Probes bestätigen ihren Fall |
+| 3 — Lens-Kanal | **fertig**, fünf Lenses: `fallback`, `entropy`, `state`, `access-control`, `business-logic` |
+| 4 — Beweisstufe | **gebaut**, 21/21 Korpus-Probes bestätigen ihren Fall |
 | 5 — Graph-Kontext | offen (CodeQL-DB deckt den Bedarf vorerst) |
 | 6 — Hooks (3 Ebenen) | **fertig** — Agent, Commit, CI |
 | 7 — Scharfschalten | offen, wartet auf Phase-2-Messung |
 | Studio-Pfad (Lab-Evidenz auf PRs) | **gebaut** — `security/studio/`, manuell / lokal, nie GitHub-hosted CI |
 
-**Aktuell gemessen** (statisches Gate + Scanner, ohne AI-Stufe — [Details](docs/security/measurements.md)).
-Die Spalte „Schwelle“ ist erzwungen: `eval/run.mjs` endet mit Exit ≠ 0, wenn Detection oder
-Falsch-Positiv-Rate sie reißt (CI-Job `verify`).
+Die Spalte „Schwelle“ ist erzwungen: `eval/run.mjs` endet mit Exit ≠ 0, wenn Detection < 50 %
+oder die Falsch-Positiv-Rate > 5 % (CI-Job `verify`). Im Modus `--no-ai` gilt die Detection-
+Schwelle über die `static_detectable`-Fälle, im vollen Lauf über alle Vuln-Fälle. p95 ist
+nicht erzwungen.
 
-| Metrik | Baseline | Jetzt | Schwelle |
-|---|---|---|---|
-| Detection Rate | 10,0 % | **60,0 %** (6/10) | ≥ 50 % |
-| Falsch-Positiv-Rate | 14,3 % | **0,0 %** (0/7) | ≤ 5 % |
-| p95 Wall-Clock | 0,8 s | 1,3 s | ≤ 480 s (nicht erzwungen) |
+**Statischer Boden** (`node security/eval/run.mjs --no-ai`) — misst nur die Fälle, die ein
+statischer Scanner finden können muss:
 
-Die vier verbleibenden Misses verlangen semantisches Verständnis — „diese 32 Byte tragen nur
-32 Bit Entropie", „dieser Zähler wird bei Reconnect zurückgesetzt". Kein Pattern-Matching
-erreicht das; dafür existiert der Lens-Kanal.
+| Metrik | Wert | Schwelle |
+|---|---|---|
+| Detection Rate | **100 %** (6/6 static_detectable) | ≥ 50 % |
+| Falsch-Positiv-Rate | **0 %** (0/13) | ≤ 5 % |
+
+**Voller AI-Eval** (2026-08-23, 33 Korpus-Fälle; Hunt+Verify über `claude-opus-5`,
+Report über `codex-cli:gpt-5.6-sol`; `node security/eval/run.mjs`):
+
+| Metrik | Wert | Schwelle |
+|---|---|---|
+| Detection Rate | **95,0 %** (19/20) | ≥ 50 % |
+| Falsch-Positiv-Rate | **0,0 %** (0/13) | ≤ 5 % |
+| p95 Wall-Clock | 298 s | ≤ 480 s (nicht erzwungen) |
+
+Einziger Fehlschlag (FN): `vuln-008-unbounded-recursion` — der subtilste inter-prozedurale Fall.
+
+**Repro-Stufe** (`node security/eval/repro.mjs`, Sandbox, `claude-opus-5`, voller Korpus) —
+reproduzierte, in der Docker-Sandbox echt ausgeführte Exploits:
+
+| Metrik | Wert |
+|---|---|
+| Repro-Rate | **90,0 %** (18/20) |
+| Falsch-Repro | **0/13** |
+
+Zwei Fälle inconclusive (`vuln-010` GitHub-Workflow-YAML, `vuln-011` IDOR — im node-Sandbox
+schwer deterministisch). Falsch-Repro 0/13, nachdem ein mis-spezifiziertes Fixture
+(`benign-006`) korrigiert wurde (PR #33); der rohe Erstlauf hatte 1/13, Ursache war das
+Fixture, nicht das Tool.
+
+**Geltungsbereich.** Gemessen mit `claude-opus-5` (Hunt+Verify) und `codex-cli:gpt-5.6-sol`
+(Report); bei abwesendem Kimi fielen die kimi-Lenses per Fallback auf opus. Der Korpus ist
+ein kuratiertes Fixture-Set (bewusst gebaute Vuln/Benign-Paare, kein realweltlicher
+CVE-Maßstab). p95 298 s heißt: der langsamste Fall dauert rund 5 min.
 
 ---
 
@@ -88,7 +116,7 @@ security/
 ├── hooks/                       Agent- und Commit-Ebene
 └── eval/
     ├── run.mjs                  Messharness
-    └── corpus/                  10 Vuln-Fälle, 7 Negativkontrollen
+    └── corpus/                  20 Vuln-Fälle, 13 Negativkontrollen
 
 .claude/settings.json            PreToolUse-Hook
 .github/workflows/security-scan.yml
@@ -106,15 +134,15 @@ security/gate/static-checks.sh origin/master
 
 # Stufe 1 — Scanner
 security/scanners/run-scanners.sh . security-report/sarif
-git diff origin/master...HEAD > /tmp/pr.diff
-node security/scanners/normalize.mjs --sarif security-report/sarif --diff /tmp/pr.diff \
+git diff origin/master...HEAD > security-report/pr.diff
+node security/scanners/normalize.mjs --sarif security-report/sarif --diff security-report/pr.diff \
   --out security-report/findings.json
 
 # Stufe 2 — Triage
 node security/redteam/triage.mjs --findings security-report/findings.json --repo .
 
 # Stufe 3 — Lens-Kanal
-node security/redteam/harness.mjs --diff /tmp/pr.diff --out /tmp/report
+node security/redteam/harness.mjs --diff security-report/pr.diff --out security-report/report
 
 # Stufe 4 — Beweis
 node security/prove/run-probes.mjs
@@ -124,8 +152,9 @@ node security/prove/run-probes.mjs
 security/gate/static-checks.sh master
 
 # Messung — endet mit Exit ≠ 0, wenn Detection < 50 % oder Falsch-Positive > 5 %
-node security/eval/run.mjs --no-ai      # ohne AI-Stufe
-node security/eval/run.mjs              # vollständig
+node security/eval/run.mjs --no-ai      # statischer Boden
+node security/eval/run.mjs              # voller AI-Eval
+node security/eval/repro.mjs            # Repro-Stufe (Sandbox)
 
 # Hooks installieren
 security/hooks/install.sh
@@ -140,7 +169,7 @@ Das Gate selbst (Suite, `static-checks`, `eval/run.mjs`) läuft unter Node ≥ 2
 belegt, Suite 23/23. Die Beweisstufe (`node security/prove/run-probes.mjs`) importiert
 `.ts`-Fixtures aus dem Korpus und braucht ein Node, das TypeScript-Typen **ohne Flag**
 strippt (gemessen: v22.22.3; laut Node/Amaro ab v22.18.0 standardmäßig aktiv). Zusätzlich
-`git` und `bash`. Scanner optional, aber ohne sie fällt die Detection Rate auf 10 %:
+`git` und `bash`. Scanner optional, aber ohne sie bleibt nur das, was das statische Gate allein findet:
 
 ```bash
 pip install semgrep
