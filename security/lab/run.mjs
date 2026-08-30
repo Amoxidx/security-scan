@@ -125,12 +125,19 @@ const memory = String(args.memory || '512m');
 const cpus = String(args.cpus || '1');
 const image = String(args.image || DEFAULT_IMAGE);
 // Missing lab.temperature falls through as undefined; providers.mjs then keeps its 0.2 default.
-// A present value must be a finite number in [0, 2]: Number("warm") or Number({}) is NaN,
-// which would not trigger the providers.mjs default but would serialize as JSON null, so the
-// server would sample with its own default while the report still claimed a set temperature.
-const temperature = labCfg.temperature === undefined || labCfg.temperature === null
-  ? undefined
-  : Number(labCfg.temperature);
+// A present value must be a JSON number, not merely a value that survives Number():
+// Number(true) is 1, Number("") and Number(false) are 0, Number(["0.5"]) is 0.5, so a coerced
+// check would let "temperature": true set sampling 1.0 silently. Number("warm") or Number({})
+// is NaN, which would not trigger the providers.mjs default but would serialize as JSON null,
+// so the server would sample with its own default while the report still claimed a set value.
+if (labCfg.temperature !== undefined && labCfg.temperature !== null && typeof labCfg.temperature !== 'number') {
+  console.error(
+    `invalid lab.temperature: ${JSON.stringify(labCfg.temperature)} — ` +
+      `must be a JSON number, got ${typeof labCfg.temperature}`,
+  );
+  process.exit(3);
+}
+const temperature = labCfg.temperature ?? undefined;
 if (temperature !== undefined && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
   console.error(
     `invalid lab.temperature: ${JSON.stringify(labCfg.temperature)} — ` +
@@ -154,6 +161,13 @@ if (!target) {
   console.error(`model unavailable: ${modelSpec} (${unavailableReason(config, name) || 'unresolved'})`);
   process.exit(3);
 }
+
+// What the provider actually samples with. A headless agent CLI has no sampling flag, so
+// callCli discards the requested value (providers.mjs only warns on stderr) and no
+// temperature was in effect — the report must not claim a number for that run.
+const reportTemperature = target.provider.type === 'cli'
+  ? `not set — ${target.providerName} is a CLI target with no sampling flag`
+  : temperature ?? null;
 
 // ---------------------------------------------------------------- helpers
 
@@ -328,6 +342,7 @@ function writeReport(report) {
     ``,
     `**Verdict:** \`${report.verdict}\``,
     `**Model:** \`${report.model}\``,
+    `**Temperature:** ${typeof report.temperature === 'number' ? `\`${report.temperature}\`` : report.temperature}`,
     `**Finding:** ${report.finding?.title || report.finding?.summary || report.finding?.id || '(untitled)'}`,
     `**Turns used:** ${report.turnsUsed} / ${report.limits.maxTurns}`,
     `**Elapsed:** ${report.elapsedMs}ms (limit ${report.limits.timeoutS}s)`,
@@ -398,7 +413,7 @@ function finalize(partial) {
     model: modelSpec,
     provider: target.providerName,
     resolvedModel: target.model,
-    temperature: temperature ?? null,
+    temperature: reportTemperature,
     turnsUsed: partial.turns.length,
     elapsedMs: Date.now() - startedAt,
     limits: {
@@ -443,7 +458,7 @@ const hardKill = setTimeout(() => {
       model: modelSpec,
       provider: target.providerName,
       resolvedModel: target.model,
-      temperature: temperature ?? null,
+      temperature: reportTemperature,
       turnsUsed: turns.length,
       elapsedMs: Date.now() - startedAt,
       limits: { maxTurns, timeoutS, hitTurnCap: false, hitWallClock: true },
@@ -617,7 +632,9 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
   });
 
   // Count consecutive non-zero exits with essentially the same script — Qwen often
-  // re-emits the same repro instead of concluding. After two identical fails, force conclude.
+  // re-emits the same repro instead of concluding. After two identical fails, the hint
+  // pushes toward conclude; it does not pick the verdict, since a repeating run may have
+  // been failing on the environment rather than on the checked property.
   const sameFailStreak = (() => {
     if (sandboxResult.exitCode === 0) return 0;
     let streak = 1;
@@ -643,11 +660,13 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
       ].join(' ')
     : sameFailStreak >= 2
       ? [
-          `exitCode is non-zero for the ${sameFailStreak}rd consecutive time with the same script.`,
-          'The fair test failed: the defect is ABSENT given this code, or the claim is wrong.',
-          'Your next reply MUST be action conclude with verdict not-reproduced (or inconclusive if the environment blocked a fair test).',
-          'Do NOT re-emit the same script. Example:',
-          '{"action":"conclude","verdict":"not-reproduced","reasoning":"fair assertion did not hold after N runs","blocker":null}',
+          `exitCode is non-zero for the ${sameFailStreak} consecutive time with the same script.`,
+          'Two identical failures are a hint, not proof that the defect is absent.',
+          'Name which side failed before you conclude: if the assertion on the checked property ran and did not hold,',
+          'conclude not-reproduced; if the run never reached the assertion because the environment failed it —',
+          'a bad import path (ERR_MODULE_NOT_FOUND), a syntax error, a missing file — conclude inconclusive.',
+          'Repeating the same script again cannot settle this.',
+          'Example shape: {"action":"conclude","verdict":"<not-reproduced or inconclusive, per which side failed>","reasoning":"<what the output actually showed>","blocker":<null or what blocked a fair test>}',
         ].join(' ')
       : [
           'exitCode is non-zero. Either the defect is absent or the script is wrong.',
