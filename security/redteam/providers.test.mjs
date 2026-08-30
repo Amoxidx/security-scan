@@ -683,6 +683,125 @@ process.stdout.write('recorded\\n');
 }
 
 {
+  async function httpCaptureTemperature(temperature) {
+    const origFetch = globalThis.fetch;
+    let sentBody = null;
+    globalThis.fetch = async (url, init) => {
+      sentBody = JSON.parse(init.body);
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({
+          content: [{ text: 'temp-result' }],
+          usage: { input_tokens: 1, output_tokens: 2 },
+        }),
+      };
+    };
+    process.env.USAGE_HTTP_KEY = 'x';
+    try {
+      const opts = { retries: 1 };
+      if (temperature !== undefined) opts.temperature = temperature;
+      const out = await m.complete(
+        { maxConcurrency: 1, providers: { moonshot: { type: 'anthropic' } } },
+        {
+          providerName: 'moonshot',
+          model: 'kimi-k2',
+          provider: {
+            type: 'anthropic',
+            baseUrl: 'http://127.0.0.1:9',
+            apiKeyEnv: 'USAGE_HTTP_KEY',
+          },
+          spec: 'moonshot:kimi-k2',
+        },
+        'sys',
+        'user',
+        opts,
+      );
+      return { out, sentBody };
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  async function openAiCaptureTemperature(temperature) {
+    const origFetch = globalThis.fetch;
+    let sentBody = null;
+    globalThis.fetch = async (url, init) => {
+      sentBody = JSON.parse(init.body);
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: 'temp-result' } }] }),
+      };
+    };
+    process.env.USAGE_HTTP_KEY = 'x';
+    try {
+      const opts = { retries: 1 };
+      if (temperature !== undefined) opts.temperature = temperature;
+      const out = await m.complete(
+        { maxConcurrency: 1, providers: { zen: { type: 'openai' } } },
+        {
+          providerName: 'zen',
+          model: 'gpt-x',
+          provider: {
+            type: 'openai',
+            baseUrl: 'http://127.0.0.1:9',
+            apiKeyEnv: 'USAGE_HTTP_KEY',
+          },
+          spec: 'zen:gpt-x',
+        },
+        'sys',
+        'user',
+        opts,
+      );
+      return { out, sentBody };
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  m.resetUsageLog();
+  const tempDefault = await httpCaptureTemperature();
+  check(
+    'anthropic http body keeps temperature 0.2 without the option',
+    tempDefault.out === 'temp-result' && tempDefault.sentBody?.temperature === 0.2,
+    JSON.stringify(tempDefault.sentBody),
+  );
+
+  m.resetUsageLog();
+  const tempZero = await httpCaptureTemperature(0);
+  check(
+    'anthropic http body carries temperature 0 from options',
+    tempZero.out === 'temp-result' && tempZero.sentBody?.temperature === 0,
+    JSON.stringify(tempZero.sentBody),
+  );
+
+  m.resetUsageLog();
+  const tempCustom = await httpCaptureTemperature(0.7);
+  check(
+    'anthropic http body carries a custom temperature from options',
+    tempCustom.sentBody?.temperature === 0.7,
+    JSON.stringify(tempCustom.sentBody),
+  );
+
+  m.resetUsageLog();
+  const oaTempDefault = await openAiCaptureTemperature();
+  check(
+    'chat_completions body keeps temperature 0.2 without the option',
+    oaTempDefault.out === 'temp-result' && oaTempDefault.sentBody?.temperature === 0.2,
+    JSON.stringify(oaTempDefault.sentBody),
+  );
+
+  m.resetUsageLog();
+  const oaTempZero = await openAiCaptureTemperature(0);
+  check(
+    'chat_completions body carries temperature 0 from options',
+    oaTempZero.out === 'temp-result' && oaTempZero.sentBody?.temperature === 0,
+    JSON.stringify(oaTempZero.sentBody),
+  );
+}
+
+{
   m.resetUsageLog();
   check('resetUsageLog clears the array', m.getUsageLog().length === 0);
 }

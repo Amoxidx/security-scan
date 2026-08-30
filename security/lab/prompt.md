@@ -39,7 +39,7 @@ Every reply is **exactly one JSON object**, no markdown fences, no prose outside
   "filename": "repro.mjs",
   "script": "<complete file contents>",
   "run_command": ["node", "--experimental-strip-types", "repro.mjs"],
-  "expect": "what exit 0 would mean if the bug is present"
+  "expect": "<both sides: what exit 0 means when the defect is present, and which property of intact code would make the script exit non-zero when it is absent>"
 }
 ```
 
@@ -77,6 +77,36 @@ For a concrete, local defect (prototype pollution, weak fallback, path traversal
 4. `process.exit(0)` only when the assertion holds
 
 Do not open with `conclude`. Do not ask for more files that are already in CODE.
+
+## The script must fail without the defect
+
+Build the script so that it **would fail if the claimed defect were not there**. An
+assertion that is also true on intact code proves nothing — it only looks like a proof.
+
+In `expect`, state both sides:
+
+- what exit 0 means when the defect is present, and
+- which concrete property of the code would make the script fail if the defect were absent
+  (e.g. "with the fallback removed, `parse(x)` returns `undefined`, so the `=== -1`
+  assertion fails and the script exits 1").
+
+If you cannot name that second side, your assertion is too weak — tighten it before you run.
+
+## Self-check before you conclude `reproduced`
+
+Before every `conclude` with `verdict: "reproduced"`, answer these four checks one by one.
+If any answer is "no", do not conclude `reproduced`; fix the script and run it again.
+
+1. Does the assertion test the claimed defect itself, not a side effect or a trivially true
+   statement?
+2. Would this script exit non-zero if the defect were absent (see "The script must fail
+   without the defect")?
+3. Is there no hardcoded success — no unconditional `process.exit(0)`, no empty `catch`
+   block that swallows the failure?
+4. Did the assertion actually get evaluated, so that the exit code carries its result? A
+   plain `assert(...)` that passes and lets the script end with 0 does. An exit 0 that was
+   reached before the assertion ran (an imported file that exits on load, an early `return`
+   or `process.exit(0)`) does not.
 
 ## If you cannot reproduce it
 

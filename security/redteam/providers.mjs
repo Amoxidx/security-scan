@@ -243,13 +243,22 @@ function assertPromptFitsArgv(bin, argv, prompt) {
 }
 
 /** A subscription coding agent in headless mode. */
-function callCli(config, target, system, user) {
+function callCli(config, target, system, user, temperature) {
   const { provider, model, providerName } = target;
   const full = resolveCliCommand(provider, providerName);
   const bin = full[0];
   const argv = full.slice(1);
   const prompt = `${system}\n\n---\n\n${user}`;
   const promptArg = provider.promptArg === true;
+
+  // A headless agent CLI has no sampling flag we may set, so a caller-requested
+  // temperature is dropped here. Saying so keeps a run from looking deterministic when it is not.
+  if (temperature !== undefined && temperature !== 0.2) {
+    console.error(
+      `[providers] ${providerName}: temperature ${temperature} is ignored for CLI targets — ` +
+        `${bin} has no sampling flag, output is not deterministic`,
+    );
+  }
 
   if (promptArg) {
     assertPromptFitsArgv(bin, argv, prompt);
@@ -288,7 +297,7 @@ function callCli(config, target, system, user) {
   });
 }
 
-async function callHttp(target, system, user) {
+async function callHttp(target, system, user, temperature = 0.2) {
   const { provider, model } = target;
   const key = process.env[provider.apiKeyEnv];
   const anthropic = provider.type === 'anthropic';
@@ -298,11 +307,11 @@ async function callHttp(target, system, user) {
     ? { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' }
     : { 'content-type': 'application/json', authorization: `Bearer ${key}` };
   const body = anthropic
-    ? { model, max_tokens: 8000, temperature: 0.2, system, messages: [{ role: 'user', content: user }] }
+    ? { model, max_tokens: 8000, temperature, system, messages: [{ role: 'user', content: user }] }
     : {
         model,
         max_tokens: 8000,
-        temperature: 0.2,
+        temperature,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -321,14 +330,14 @@ async function callHttp(target, system, user) {
 
 // ---------------------------------------------------------------- entry point
 
-export async function complete(config, target, system, user, { retries = 3 } = {}) {
+export async function complete(config, target, system, user, { retries = 3, temperature } = {}) {
   const limit = config.maxConcurrency || 6;
   return withSlot(limit, async () => {
     for (let attempt = 0; attempt < retries; attempt += 1) {
       try {
         return target.provider.type === 'cli'
-          ? await callCli(config, target, system, user)
-          : await callHttp(target, system, user);
+          ? await callCli(config, target, system, user, temperature)
+          : await callHttp(target, system, user, temperature);
       } catch (err) {
         if (attempt === retries - 1) throw err;
         await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));

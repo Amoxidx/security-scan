@@ -124,7 +124,7 @@
     "model": "codex-cli:gpt-5.6-sol"
   },
   "lab": {
-    "$comment": "Local machine-evidence stage (security/lab + security/studio). Never CI. Default is jk-coder, the local Ollama registration of Qwen3-Coder-Next 80B-A3B MoE. preferredModels is the fallback when jk-coder is not pulled.",
+    "$comment": "Local machine-evidence stage (security/lab + security/studio). Never CI. Default is jk-coder, now Qwen3.8-Flash-Next (MoE, 4-bit), served over mlx-serve instead of Ollama; the endpoint and the name stayed the same. preferredModels is the fallback when jk-coder is not pulled.",
     "model": "ollama:jk-coder",
     "preferredModels": [
       "qwen3-coder-next:q4_K_M",
@@ -134,6 +134,8 @@
     ],
     "maxTurns": 6,
     "timeoutS": 300,
-    "maxFindings": 5
+    "maxFindings": 5,
+    "temperature": 0,
+    "temperature.$comment": "Proof scripts must be reproducible; any sampling value above 0 makes the same proof run-dependent."
   }
 }
