@@ -125,9 +125,19 @@ const memory = String(args.memory || '512m');
 const cpus = String(args.cpus || '1');
 const image = String(args.image || DEFAULT_IMAGE);
 // Missing lab.temperature falls through as undefined; providers.mjs then keeps its 0.2 default.
+// A present value must be a finite number in [0, 2]: Number("warm") or Number({}) is NaN,
+// which would not trigger the providers.mjs default but would serialize as JSON null, so the
+// server would sample with its own default while the report still claimed a set temperature.
 const temperature = labCfg.temperature === undefined || labCfg.temperature === null
   ? undefined
   : Number(labCfg.temperature);
+if (temperature !== undefined && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+  console.error(
+    `invalid lab.temperature: ${JSON.stringify(labCfg.temperature)} — ` +
+      'needs a finite number between 0 and 2, or null/absent to use the provider default',
+  );
+  process.exit(3);
+}
 const finding = JSON.parse(readFileSync(findingPath, 'utf8'));
 const systemPrompt = readFileSync(PROMPT_PATH, 'utf8');
 const diffText = diffPath && existsSync(diffPath) ? readFileSync(diffPath, 'utf8') : '';
@@ -388,6 +398,7 @@ function finalize(partial) {
     model: modelSpec,
     provider: target.providerName,
     resolvedModel: target.model,
+    temperature: temperature ?? null,
     turnsUsed: partial.turns.length,
     elapsedMs: Date.now() - startedAt,
     limits: {
@@ -432,6 +443,7 @@ const hardKill = setTimeout(() => {
       model: modelSpec,
       provider: target.providerName,
       resolvedModel: target.model,
+      temperature: temperature ?? null,
       turnsUsed: turns.length,
       elapsedMs: Date.now() - startedAt,
       limits: { maxTurns, timeoutS, hitTurnCap: false, hitWallClock: true },
@@ -621,10 +633,13 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
 
   const decisiveHint = sandboxResult.exitCode === 0
     ? [
-        'exitCode is 0. Under the contract this means the bug is PRESENT.',
-        'Unless the script was a trivial always-true assertion (it was not, if it imported the subject and checked the claimed property),',
-        'your next reply MUST be action conclude with verdict reproduced.',
-        'Example: {"action":"conclude","verdict":"reproduced","reasoning":"sandbox exit 0 after asserting <property>","blocker":null}',
+        'exitCode is 0. Under the contract that is a necessary condition for the bug being present, not a proof of it.',
+        'Before you conclude, work through the self-check from your instructions, one point at a time.',
+        'The most common false positive is exit 0 because the script ended before the assertion ran —',
+        'for example an imported file that calls process.exit(0) while loading.',
+        'If any check answers "no", do not conclude: fix the script and run it again.',
+        'If you conclude, your reasoning must state which assertion you evaluated and what it showed.',
+        'Example shape: {"action":"conclude","verdict":"<verdict you derived>","reasoning":"<your own finding from this run>","blocker":null}',
       ].join(' ')
     : sameFailStreak >= 2
       ? [

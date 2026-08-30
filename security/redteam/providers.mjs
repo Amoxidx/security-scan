@@ -243,13 +243,22 @@ function assertPromptFitsArgv(bin, argv, prompt) {
 }
 
 /** A subscription coding agent in headless mode. */
-function callCli(config, target, system, user) {
+function callCli(config, target, system, user, temperature) {
   const { provider, model, providerName } = target;
   const full = resolveCliCommand(provider, providerName);
   const bin = full[0];
   const argv = full.slice(1);
   const prompt = `${system}\n\n---\n\n${user}`;
   const promptArg = provider.promptArg === true;
+
+  // A headless agent CLI has no sampling flag we may set, so a caller-requested
+  // temperature is dropped here. Saying so keeps a run from looking deterministic when it is not.
+  if (temperature !== undefined && temperature !== 0.2) {
+    console.error(
+      `[providers] ${providerName}: temperature ${temperature} is ignored for CLI targets — ` +
+        `${bin} has no sampling flag, output is not deterministic`,
+    );
+  }
 
   if (promptArg) {
     assertPromptFitsArgv(bin, argv, prompt);
@@ -327,7 +336,7 @@ export async function complete(config, target, system, user, { retries = 3, temp
     for (let attempt = 0; attempt < retries; attempt += 1) {
       try {
         return target.provider.type === 'cli'
-          ? await callCli(config, target, system, user)
+          ? await callCli(config, target, system, user, temperature)
           : await callHttp(target, system, user, temperature);
       } catch (err) {
         if (attempt === retries - 1) throw err;

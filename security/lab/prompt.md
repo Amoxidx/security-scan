@@ -39,7 +39,7 @@ Every reply is **exactly one JSON object**, no markdown fences, no prose outside
   "filename": "repro.mjs",
   "script": "<complete file contents>",
   "run_command": ["node", "--experimental-strip-types", "repro.mjs"],
-  "expect": "what exit 0 would mean if the bug is present"
+  "expect": "<both sides: what exit 0 means when the defect is present, and which property of intact code would make the script exit non-zero when it is absent>"
 }
 ```
 
@@ -103,8 +103,10 @@ If any answer is "no", do not conclude `reproduced`; fix the script and run it a
    without the defect")?
 3. Is there no hardcoded success — no unconditional `process.exit(0)`, no empty `catch`
    block that swallows the failure?
-4. Does the exit code come from the assertion result, not merely from the script starting
-   and running to the end?
+4. Did the assertion actually get evaluated, so that the exit code carries its result? A
+   plain `assert(...)` that passes and lets the script end with 0 does. An exit 0 that was
+   reached before the assertion ran (an imported file that exits on load, an early `return`
+   or `process.exit(0)`) does not.
 
 ## If you cannot reproduce it
 

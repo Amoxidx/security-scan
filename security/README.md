@@ -125,12 +125,17 @@ und Exit-Code **2**. „Kein Ergebnis“ ist **nicht** „sicher“ und wird auc
 ### Voraussetzungen
 
 ```bash
-# einmalig / bei Bedarf — Formula (nicht nur die Desktop-App):
-brew install ollama
-brew services start ollama   # oder: $(brew --prefix ollama)/bin/ollama serve
+# einmalig / bei Bedarf — der Model-Server ist mlx-serve, nicht Ollama.
+# Er muss installiert sein und auf 127.0.0.1:11434 lauschen; wo er liegt, ist
+# maschinenspezifisch. Start wahlweise als launchd-Agent oder im Vordergrund:
+mlx-serve serve --host 127.0.0.1 --port 11434 &   # oder: als launchd-Agent geladen, dann läuft er von selbst
+curl -s http://127.0.0.1:11434/api/tags    # muss jk-coder listen
 
-# Quant: Q8_0 (ollama show jk-coder).
-ollama pull jk-coder
+# Modell: jk-coder, MLX-4-bit-quantisiert (in der Modell-Datei unter
+# quantization_config.bits = 4 nachlesbar). Ollama wird nicht mehr installiert oder
+# gepullt; mlx-serve bedient die Ollama-Routen /api/tags und /v1/chat/completions auf
+# Port 11434, deshalb funktionieren Modell-Erkennung
+# (security/studio/lab-model.mjs) und Provider-Konfiguration unverändert.
 
 colima start                 # docker-CLI spricht danach den colima-Socket
 docker pull node:22-bookworm-slim
