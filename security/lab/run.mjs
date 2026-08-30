@@ -2,9 +2,10 @@
 /**
  * Local repro / fuzz / trace lab — manual only, never CI.
  *
- * Takes one finding (+ staged code), drives a local model (default: jk-coder (local Qwen3-Coder-Next) via
- * Ollama's OpenAI-compatible endpoint) through a hard-capped execute/conclude loop, runs
- * every proposed script inside an ephemeral docker/colima sandbox, and writes a report
+ * Takes one finding (+ staged code), drives a local model (default: jk-coder (local
+ * Qwen3.8-Flash-Next, MoE, 4-bit) via mlx-serve's OpenAI-compatible endpoint, no longer
+ * Ollama) through a hard-capped execute/conclude loop, runs every proposed script inside
+ * an ephemeral docker/colima sandbox, and writes a report
  * with verdict reproduced | not-reproduced | inconclusive.
  *
  * Fail closed: hitting the turn cap or wall-clock timeout yields inconclusive, never
@@ -123,6 +124,10 @@ const sandboxTimeoutS = Math.max(1, Number(args['sandbox-timeout-s'] ?? 60));
 const memory = String(args.memory || '512m');
 const cpus = String(args.cpus || '1');
 const image = String(args.image || DEFAULT_IMAGE);
+// Missing lab.temperature falls through as undefined; providers.mjs then keeps its 0.2 default.
+const temperature = labCfg.temperature === undefined || labCfg.temperature === null
+  ? undefined
+  : Number(labCfg.temperature);
 const finding = JSON.parse(readFileSync(findingPath, 'utf8'));
 const systemPrompt = readFileSync(PROMPT_PATH, 'utf8');
 const diffText = diffPath && existsSync(diffPath) ? readFileSync(diffPath, 'utf8') : '';
@@ -287,9 +292,9 @@ function buildInitialUserMessage() {
   ].join('\n');
 }
 
-async function callModel(system, user, budgetMs) {
+async function callModel(system, user, budgetMs, temperature) {
   if (budgetMs <= 0) throw new Error('wall-clock budget exhausted before model call');
-  const call = providerComplete(config, target, system, user, { retries: 1 });
+  const call = providerComplete(config, target, system, user, { retries: 1, temperature });
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(`model call exceeded remaining wall-clock (${budgetMs}ms)`)), budgetMs);
@@ -495,7 +500,7 @@ for (let turn = 1; turn <= maxTurns; turn += 1) {
   try {
     // Leave a few seconds of budget for report writing after the last call.
     const budget = Math.max(1_000, remainingMs(deadline) - 3_000);
-    raw = await callModel(systemPrompt, userMessage, budget);
+    raw = await callModel(systemPrompt, userMessage, budget, temperature);
   } catch (err) {
     turns.push({ turn, action: 'error', error: err.message });
     const hitWall = /wall-clock|budget exhausted/i.test(err.message) || remainingMs(deadline) <= 0;

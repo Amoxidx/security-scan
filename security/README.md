@@ -74,7 +74,8 @@ Details: [`security/studio/README.md`](studio/README.md).
 Umsetzung genau dieser Entscheidung als **manuelles** Kommandozeilenwerkzeug — nicht als
 CI-Job. Findings, die die `verify`-Stufe (k-of-n Refutation) überstehen, sind sonst nur durch
 Modell-Meinung abgesichert; das Lab holt **machine evidence**, indem es ein lokales
-Coding-Modell (Standard: `qwen3-coder-next` über Ollama) einen Repro-Skript-Vorschlag
+Coding-Modell (Standard: `jk-coder`, ein Qwen3.8-Flash-Next (MoE, 4-bit) über mlx-serve statt
+Ollama; Endpunkt und Name sind gleich geblieben) einen Repro-Skript-Vorschlag
 schreiben und in Isolation ausführen lässt.
 
 **Läuft nur lokal, nur manuell, nie in GitHub Actions.** Die Workflows unter
