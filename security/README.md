@@ -86,7 +86,7 @@ schreiben und in Isolation ausführen lässt.
 1. Liest ein Finding (Schema wie `harness.mjs` / `triage.mjs`) und den betroffenen Codebaum.
 2. Spricht Ollama über die bestehende OpenAI-kompatible Provider-Route
    (`config.json` → Provider `ollama`, `type: "openai"`,
-   `baseUrl: "http://localhost:11434/v1"`).
+   `baseUrl: "http://127.0.0.1:11434/v1"`).
 3. Treibt eine enge execute/conclude-Schleife: das Modell liefert JSON mit einem Skript,
    das Lab schreibt es in ein **ephemeres** Workdir und startet es in einem Container.
 4. Schreibt einen Bericht nach `--out` mit Verdict
@@ -170,7 +170,7 @@ Provider-Eintrag in `redteam/config.json` (kein neuer Transport-Typ):
 ```json
 "ollama": {
   "type": "openai",
-  "baseUrl": "http://localhost:11434/v1",
+  "baseUrl": "http://127.0.0.1:11434/v1",
   "apiKeyEnv": "OLLAMA_API_KEY"
 }
 ```
