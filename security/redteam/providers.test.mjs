@@ -71,6 +71,12 @@ function check(name, ok, detail = '') {
     billed.join(',') === 'anthropic,moonshot,zen' && cfg.providers.ollama?.billed !== true,
     billed.join(','),
   );
+  check(
+    'config ollama baseUrl is canonical IPv4 loopback',
+    cfg.providers.ollama?.baseUrl === 'http://127.0.0.1:11434/v1'
+      && cfg.providers.ollama?.baseUrl !== 'http://localhost:11434/v1',
+    cfg.providers.ollama?.baseUrl,
+  );
   const promptArgNames = Object.entries(cfg.providers)
     .filter(([, p]) => p.promptArg === true)
     .map(([name]) => name);
