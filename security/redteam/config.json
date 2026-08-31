@@ -71,7 +71,7 @@
     "ollama": {
       "type": "openai",
       "$comment": "Local Ollama OpenAI-compatible endpoint for the manual repro lab (security/lab). Not used by CI. Set OLLAMA_API_KEY to any non-empty string (Ollama ignores auth); lab/run.mjs defaults it to 'ollama' when unset.",
-      "baseUrl": "http://localhost:11434/v1",
+      "baseUrl": "http://127.0.0.1:11434/v1",
       "apiKeyEnv": "OLLAMA_API_KEY"
     }
   },
