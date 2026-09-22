@@ -745,6 +745,283 @@ echo "=== normalize.mjs liest die Status (H2-Kette) ==="
   fi
 }
 
+# ---------------------------------------------------------------- SARIF security-severity authority
+
+echo "=== normalize SARIF security-severity authority ==="
+
+# A rule-level security-severity score is authoritative security metadata even when the
+# result's SARIF level is only warning. The fixture also exercises ruleIndex-only results,
+# exact 7.0/9.0 boundaries, original error preservation, zero-as-no-security-score, and
+# duplicate identity merging where a later weaker result must not erase the stronger one.
+{
+  new_case security-severity
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"score fixture"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {"driver": {"name": "fake", "rules": [
+        {"id":"R-critical","properties":{"security-severity":"9.0"}},
+        {"id":"R-high","properties":{"security-severity":"7.0"}},
+        {"id":"R-medium","properties":{"security-severity":"6.9"}},
+        {"id":"R-zero","properties":{"security-severity":"0"}},
+        {"id":"R-error","properties":{"security-severity":"1.0"}},
+        {"id":"R-dup","properties":{"security-severity":"9.1"}}
+      ]}},
+      "results": [
+        {"ruleId":"R-critical","level":"warning","message":{"text":"critical score"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/critical.js"},"region":{"startLine":1}}}]},
+        {"ruleIndex":1,"level":"warning","message":{"text":"high score"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/high.js"},"region":{"startLine":7}}}]},
+        {"ruleId":"R-medium","level":"warning","message":{"text":"medium score"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/medium.js"},"region":{"startLine":4}}}]},
+        {"ruleId":"R-zero","level":"warning","message":{"text":"zero score"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/zero.js"},"region":{"startLine":2}}}]},
+        {"ruleId":"R-error","level":"error","message":{"text":"original error"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/error.js"},"region":{"startLine":3}}}]},
+        {"ruleId":"R-dup","level":"warning","message":{"text":"strong duplicate"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/dup.js"},"region":{"startLine":9}}}]}
+      ]
+    },
+    {
+      "tool": {"driver": {"name": "other", "rules": [{"id":"R-dup","properties":{"security-severity":"7.0"}}]}},
+      "results": [
+        {"ruleId":"R-dup","level":"warning","message":{"text":"weak duplicate"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/dup.js"},"region":{"startLine":9}}}]}
+      ]
+    }
+  ]
+}
+JSON
+  normalize_exit "$OUT" "--block-on critical,high,error" "$WORK/security-severity-findings.json"
+  if [ "$NORMALIZE_RC" -eq 1 ]; then
+    if node - "$WORK/security-severity-findings.json" <<'NODE'
+const fs = require('node:fs');
+const j = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const byRule = new Map(j.findings.map((f) => [f.ruleId, f]));
+const dup = j.findings.filter((f) => f.ruleId === 'R-dup');
+const ok = j.blocking === 5 && dup.length === 2 &&
+  new Set(dup.map((f) => f.tool)).size === 2 &&
+  byRule.get('R-critical')?.severity === 'critical' &&
+  byRule.get('R-critical')?.sarifLevel === 'warning' &&
+  byRule.get('R-critical')?.securitySeverity === 'critical' &&
+  byRule.get('R-critical')?.securitySeverityScore === 9 &&
+  byRule.get('R-high')?.severity === 'high' &&
+  byRule.get('R-high')?.securitySeverityScore === 7 &&
+  byRule.get('R-medium')?.severity === 'medium' &&
+  byRule.get('R-zero')?.severity === 'warning' &&
+  byRule.get('R-zero')?.securitySeverity === null &&
+  byRule.get('R-zero')?.securitySeveritySource === 'rule.properties.security-severity' &&
+  byRule.get('R-error')?.severity === 'error' &&
+  byRule.get('R-error')?.securitySeverity === 'low' &&
+  dup.some((f) => f.securitySeverityScore === 9.1 && f.severity === 'critical') &&
+  dup.some((f) => f.securitySeverityScore === 7 && f.severity === 'high');
+process.exit(ok ? 0 : 1);
+NODE
+    then
+      case_result "normalize: SARIF security-severity maps and retains conflicting authority records" 1
+    else
+      case_result "normalize: SARIF security-severity maps and retains conflicting authority records" 0 \
+        "rc=$NORMALIZE_RC findings=$(short "$(cat "$WORK/security-severity-findings.json")")"
+    fi
+  else
+    case_result "normalize: SARIF security-severity maps and retains conflicting authority records" 0 \
+      "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# A present but unusable security-severity value must fail closed instead of silently falling
+# back to warning and making a high-score result disappear from the blocking stream.
+{
+  new_case security-severity-malformed
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"malformed score fixture"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-bad","properties":{"security-severity":"9.0junk"}}]}},"results":[{"ruleId":"R-bad","level":"warning","message":{"text":"bad score"}}]}]}
+JSON
+  normalize_exit "$OUT" "--no-gate" "$WORK/security-severity-malformed-findings.json"
+  if [ "$NORMALIZE_RC" -ne 0 ] && grep -q 'security-severity' "$WORK/normalize.log"; then
+    case_result "normalize: malformed security-severity fails closed" 1
+  else
+    case_result "normalize: malformed security-severity fails closed" 0 \
+      "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# A conflicting ruleId/ruleIndex pair must not let the score from an unrelated rule be used.
+{
+  new_case security-severity-rule-mismatch
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"rule reference fixture"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-one","properties":{"security-severity":"9.0"}},{"id":"R-two","properties":{"security-severity":"1.0"}}]}},"results":[{"ruleId":"R-one","ruleIndex":1,"level":"warning","message":{"text":"conflicting rule reference"}}]}]}
+JSON
+  normalize_exit "$OUT" "--no-gate" "$WORK/security-severity-rule-mismatch-findings.json"
+  if [ "$NORMALIZE_RC" -ne 0 ] && grep -q -E 'ruleIndex|rule reference' "$WORK/normalize.log"; then
+    case_result "normalize: conflicting ruleId/ruleIndex fails closed" 1
+  else
+    case_result "normalize: conflicting ruleId/ruleIndex fails closed" 0 \
+      "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# Duplicate rule IDs are ambiguous authority metadata and must fail closed.
+{
+  new_case security-severity-duplicate-rule-ids
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"duplicate rule IDs"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-dup","properties":{"security-severity":"9.0"}},{"id":"R-dup","properties":{"security-severity":"1.0"}}]}},"results":[{"ruleId":"R-dup","level":"warning","message":{"text":"ambiguous rule"}}]}]}
+JSON
+  normalize_exit "$OUT" "--no-gate" "$WORK/security-severity-duplicate-rule-ids-findings.json"
+  if [ "$NORMALIZE_RC" -ne 0 ] && grep -q 'unique non-empty IDs' "$WORK/normalize.log"; then
+    case_result "normalize: duplicate rule IDs fail closed" 1
+  else
+    case_result "normalize: duplicate rule IDs fail closed" 0 "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# A non-negative ruleIndex that points outside the driver rule table is malformed.
+{
+  new_case security-severity-rule-index-out-of-range
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"rule index"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-only","properties":{"security-severity":"9.0"}}]}},"results":[{"ruleIndex":1,"level":"warning","message":{"text":"missing rule"}}]}]}
+JSON
+  normalize_exit "$OUT" "--no-gate" "$WORK/security-severity-rule-index-out-of-range-findings.json"
+  if [ "$NORMALIZE_RC" -ne 0 ] && grep -q 'ruleIndex' "$WORK/normalize.log"; then
+    case_result "normalize: out-of-range ruleIndex fails closed" 1
+  else
+    case_result "normalize: out-of-range ruleIndex fails closed" 0 "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# An invalid defaultConfiguration level must not silently become warning.
+{
+  new_case security-severity-invalid-default-level
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"default level"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-bad","defaultConfiguration":{"level":"bogus"}}]}},"results":[{"ruleId":"R-bad","message":{"text":"bad default"}}]}]}
+JSON
+  normalize_exit "$OUT" "--no-gate" "$WORK/security-severity-invalid-default-level-findings.json"
+  if [ "$NORMALIZE_RC" -ne 0 ] && grep -q 'default level' "$WORK/normalize.log"; then
+    case_result "normalize: invalid default level fails closed" 1
+  else
+    case_result "normalize: invalid default level fails closed" 0 "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# Extension rule components are outside this resolver's declared scope; do not
+# silently treat an extension rule as an unscored warning.
+{
+  new_case security-severity-extension-rules
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"extension rule"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[]},"extensions":[{"name":"extension","rules":[{"id":"R-ext","properties":{"security-severity":"9.0"}}]}]},"results":[{"ruleId":"R-ext","level":"warning","message":{"text":"extension score"}}]}]}
+JSON
+  normalize_exit "$OUT" "--no-gate" "$WORK/security-severity-extension-rules-findings.json"
+  if [ "$NORMALIZE_RC" -ne 0 ] && grep -q 'extension rule components' "$WORK/normalize.log"; then
+    case_result "normalize: unsupported extension rules fail closed" 1
+  else
+    case_result "normalize: unsupported extension rules fail closed" 0 "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# The standalone normalizer keeps its raw-SARIF default (error); callers that own a
+# configured policy pass --block-on explicitly, as Studio does.
+{
+  new_case security-severity-default-policy
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"default policy"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-critical","properties":{"security-severity":"9.0"}}]}},"results":[{"ruleId":"R-critical","level":"warning","message":{"text":"default policy"} }]}]}
+JSON
+  normalize_exit "$OUT" "--no-gate" "$WORK/security-severity-default-findings.json"
+  if [ "$NORMALIZE_RC" -eq 0 ] && node - "$WORK/security-severity-default-findings.json" <<'NODE'
+const fs = require('node:fs');
+const j = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+process.exit(j.blocking === 0 && j.findings[0]?.securitySeverity === 'critical' ? 0 : 1);
+NODE
+  then
+    case_result "normalize: standalone default blocks raw errors only" 1
+  else
+    case_result "normalize: standalone default blocks raw errors only" 0       "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# SARIF 2.1.0 also permits a reportingDescriptorReference in result.rule. Both
+# supported reference forms must carry the rule's score into the blocking decision.
+{
+  new_case security-severity-rule-object
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"object references"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-critical","properties":{"security-severity":"9.0"}},{"id":"R-high","properties":{"security-severity":"7.0"}}]}},"results":[{"rule":{"id":"R-critical"},"level":"warning","message":{"text":"object id"}},{"rule":{"index":1},"level":"warning","message":{"text":"object index"}}]}]}
+JSON
+  normalize_exit "$OUT" "--block-on critical,high,error" "$WORK/security-severity-rule-object-findings.json"
+  if [ "$NORMALIZE_RC" -eq 1 ] && node - "$WORK/security-severity-rule-object-findings.json" <<'NODE'
+const fs = require('node:fs');
+const j = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const byMessage = new Map(j.findings.map((f) => [f.message, f]));
+const ok = j.blocking === 2 &&
+  byMessage.get('object id')?.ruleId === 'R-critical' &&
+  byMessage.get('object id')?.securitySeverityScore === 9 &&
+  byMessage.get('object id')?.severity === 'critical' &&
+  byMessage.get('object index')?.ruleId === 'R-high' &&
+  byMessage.get('object index')?.securitySeverityScore === 7 &&
+  byMessage.get('object index')?.severity === 'high';
+process.exit(ok ? 0 : 1);
+NODE
+  then
+    case_result "normalize: SARIF result.rule id/index references retain score authority" 1
+  else
+    case_result "normalize: SARIF result.rule id/index references retain score authority" 0       "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# A reference conflict or unsupported reference member must fail closed, including under
+# --no-gate where only findings are exempt from failure.
+{
+  new_case security-severity-rule-reference-invalid
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"invalid references"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-one","properties":{"security-severity":"9.0"}},{"id":"R-two","properties":{"security-severity":"1.0"}}]}},"results":[{"ruleId":"R-one","ruleIndex":1,"rule":{"id":"R-one","index":0},"level":"warning","message":{"text":"conflicting references"}},{"rule":{"id":"R-one","guid":"unsupported"},"level":"warning","message":{"text":"unsupported reference"}}]}]}
+JSON
+  normalize_exit "$OUT" "--no-gate" "$WORK/security-severity-rule-reference-invalid-findings.json"
+  if [ "$NORMALIZE_RC" -ne 0 ] && grep -q -E 'rule\.index|rule reference|not supported' "$WORK/normalize.log"; then
+    case_result "normalize: conflicting and unsupported result.rule references fail closed" 1
+  else
+    case_result "normalize: conflicting and unsupported result.rule references fail closed" 0       "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
+# Invocation ruleConfigurationOverrides can change a rule's effective level. This bounded
+# resolver does not implement those overrides, so their presence must be an explicit error.
+{
+  new_case security-severity-rule-overrides
+  cat > "$OUT/scanners.json" <<'JSON'
+[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"unsupported invocation override"}]
+JSON
+  cat > "$OUT/fake.sarif" <<'JSON'
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-override","properties":{"security-severity":"9.0"}}]}},"invocations":[{"ruleConfigurationOverrides":[{"configuration":{"level":"error"},"descriptor":{"id":"R-override"}}]}],"results":[{"ruleId":"R-override","message":{"text":"override must not default"} }]}]}
+JSON
+  normalize_exit "$OUT" "--no-gate" "$WORK/security-severity-rule-overrides-findings.json"
+  if [ "$NORMALIZE_RC" -ne 0 ] && grep -q 'ruleConfigurationOverrides' "$WORK/normalize.log"; then
+    case_result "normalize: unsupported invocation overrides fail closed" 1
+  else
+    case_result "normalize: unsupported invocation overrides fail closed" 0       "rc=$NORMALIZE_RC log=$(short "$(cat "$WORK/normalize.log")")"
+  fi
+}
+
 # ---------------------------------------------------------------- counterprobe: the wrong fix
 #
 # "Trust the exit code." osv-scanner exits 0 for a clean scan, for a backend that never

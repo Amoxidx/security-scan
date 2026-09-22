@@ -154,9 +154,138 @@ function readScannerMetadata(path, dir) {
 
 const SEVERITY = { error: 'error', warning: 'warning', note: 'note', none: 'note' };
 
-function ruleMeta(run, ruleId) {
-  const rules = run.tool?.driver?.rules || [];
-  return rules.find((r) => r.id === ruleId) || {};
+const SECURITY_SEVERITY_PROPERTY = 'security-severity';
+function validRuleLevel(level) {
+  return level === undefined || Object.hasOwn(SEVERITY, level);
+}
+
+function rulesFor(run, path) {
+  const extensions = run.tool?.extensions;
+  if (extensions !== undefined &&
+      (!Array.isArray(extensions) || extensions.some((extension) => extension?.rules !== undefined))) {
+    throw new Error(`malformed SARIF ${path}: extension rule components are unsupported for rule resolution`);
+  }
+  const rules = run.tool?.driver?.rules;
+  if (rules !== undefined && !Array.isArray(rules)) {
+    throw new Error(`malformed SARIF ${path}: tool driver rules must be an array`);
+  }
+  const list = Array.isArray(rules) ? rules : [];
+  const seen = new Set();
+  for (const rule of list) {
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule) ||
+        typeof rule.id !== 'string' || !rule.id.trim() || seen.has(rule.id)) {
+      throw new Error(`malformed SARIF ${path}: rules must have unique non-empty IDs`);
+    }
+    seen.add(rule.id);
+    if (rule.properties !== undefined &&
+        (!rule.properties || typeof rule.properties !== 'object' || Array.isArray(rule.properties))) {
+      throw new Error(`malformed SARIF ${path}: rule ${rule.id} properties are not an object`);
+    }
+    if (rule.defaultConfiguration !== undefined &&
+        (!rule.defaultConfiguration || typeof rule.defaultConfiguration !== 'object' ||
+         Array.isArray(rule.defaultConfiguration) ||
+         !validRuleLevel(rule.defaultConfiguration.level))) {
+      throw new Error(`malformed SARIF ${path}: rule ${rule.id} default level is invalid`);
+    }
+  }
+  return list;
+}
+
+function resultRuleReference(result, path) {
+  if (!Object.hasOwn(result, 'rule')) return {};
+  const reference = result.rule;
+  if (!reference || typeof reference !== 'object' || Array.isArray(reference)) {
+    throw new Error(`malformed SARIF ${path}: result.rule must be an object`);
+  }
+  for (const key of Object.keys(reference)) {
+    if (key !== 'id' && key !== 'index') {
+      throw new Error(`unsupported SARIF ${path}: result.rule.${key} is not supported`);
+    }
+  }
+  if (reference.id !== undefined &&
+      (typeof reference.id !== 'string' || !reference.id.trim())) {
+    throw new Error(`malformed SARIF ${path}: result.rule.id is invalid`);
+  }
+  if (reference.index !== undefined &&
+      (!Number.isInteger(reference.index) || reference.index < 0)) {
+    throw new Error(`malformed SARIF ${path}: result.rule.index is invalid`);
+  }
+  if (reference.id === undefined && reference.index === undefined) {
+    throw new Error(`malformed SARIF ${path}: result.rule has no id or index`);
+  }
+  return reference;
+}
+
+function ruleMeta(run, result, path) {
+  const list = rulesFor(run, path);
+  const reference = resultRuleReference(result, path);
+  if (result.ruleId !== undefined && reference.id !== undefined &&
+      result.ruleId !== reference.id) {
+    throw new Error(`malformed SARIF ${path}: ruleId/rule.id reference different rules`);
+  }
+  if (result.ruleIndex !== undefined && reference.index !== undefined &&
+      result.ruleIndex !== reference.index) {
+    throw new Error(`malformed SARIF ${path}: ruleIndex/rule.index reference different rules`);
+  }
+  const ruleId = result.ruleId ?? reference.id;
+  const ruleIndex = result.ruleIndex ?? reference.index;
+  const byIndex = ruleIndex === undefined ? null : list[ruleIndex];
+  const byId = ruleId === undefined ? null : list.find((rule) => rule && rule.id === ruleId) || null;
+  if (ruleIndex !== undefined && !byIndex) {
+    throw new Error(`malformed SARIF ${path}: ruleIndex ${ruleIndex} has no rule`);
+  }
+  if (ruleId !== undefined && ruleIndex !== undefined &&
+      (!byIndex || byIndex.id !== ruleId)) {
+    throw new Error(`malformed SARIF ${path}: ruleId/ruleIndex reference different rules`);
+  }
+  if (ruleId !== undefined && ruleIndex === undefined && list.length && !byId) {
+    throw new Error(`malformed SARIF ${path}: ruleId ${ruleId} is not declared by the driver`);
+  }
+  return byIndex || byId || (ruleId === undefined ? {} : { id: ruleId });
+}
+
+function parseSecurityScore(meta, path, ruleId) {
+  const properties = meta?.properties;
+  if (properties === undefined) return null;
+  if (typeof properties !== 'object' || Array.isArray(properties)) {
+    throw new Error(`malformed SARIF ${path}: rule properties are not an object`);
+  }
+  if (!Object.hasOwn(properties, SECURITY_SEVERITY_PROPERTY)) return null;
+  const raw = properties[SECURITY_SEVERITY_PROPERTY];
+  const text = typeof raw === 'string' ? raw.trim() : raw;
+  if ((typeof text !== 'string' && typeof text !== 'number') ||
+      (typeof text === 'string' && !/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(text))) {
+    throw new Error(`malformed SARIF ${path}: rule ${ruleId || 'unknown'} has invalid security-severity`);
+  }
+  const score = Number(text);
+  if (!Number.isFinite(score) || score < 0 || score > 10) {
+    throw new Error(`malformed SARIF ${path}: rule ${ruleId || 'unknown'} has invalid security-severity`);
+  }
+  return score;
+}
+
+function securityLevel(score) {
+  if (score === null || score === 0) return null;
+  if (score >= 9) return 'critical';
+  if (score >= 7) return 'high';
+  if (score >= 4) return 'medium';
+  return 'low';
+}
+
+function authoritiesForFinding(finding) {
+  const authorities = new Set();
+  if (finding.sarifLevel && Object.hasOwn(SEVERITY, finding.sarifLevel)) {
+    authorities.add(SEVERITY[finding.sarifLevel]);
+  } else if (finding.severity) {
+    authorities.add(finding.severity);
+  }
+  if (finding.securitySeverity) authorities.add(finding.securitySeverity);
+  if (finding.severity) authorities.add(finding.severity);
+  return authorities;
+}
+
+function blocksByPolicy(finding, policy) {
+  return [...authoritiesForFinding(finding)].some((authority) => policy.includes(authority));
 }
 
 function fromSarif(path, toolHint) {
@@ -179,6 +308,20 @@ function fromSarif(path, toolHint) {
           run.results.some((result) => !result || typeof result !== 'object' || Array.isArray(result))))) {
       throw new Error(`malformed SARIF ${path}: invalid run structure`);
     }
+    rulesFor(run, path);
+    if (run.invocations !== undefined &&
+        (!Array.isArray(run.invocations) ||
+         run.invocations.some((invocation) =>
+           !invocation || typeof invocation !== 'object' || Array.isArray(invocation)))) {
+      throw new Error(`malformed SARIF ${path}: run invocations are invalid`);
+    }
+    for (const invocation of run.invocations || []) {
+      if (Object.hasOwn(invocation, 'ruleConfigurationOverrides')) {
+        throw new Error(
+          `unsupported SARIF ${path}: invocation.ruleConfigurationOverrides are not supported`,
+        );
+      }
+    }
   }
   for (const run of doc.runs) {
     for (const result of run.results || []) {
@@ -190,6 +333,10 @@ function fromSarif(path, toolHint) {
       }
       if ('ruleId' in result && typeof result.ruleId !== 'string') {
         throw new Error('malformed SARIF ' + path + ': result ruleId is not a string');
+      }
+      if ('ruleIndex' in result &&
+          (!Number.isInteger(result.ruleIndex) || result.ruleIndex < 0)) {
+        throw new Error('malformed SARIF ' + path + ': result ruleIndex is invalid');
       }
       if ('level' in result && !Object.hasOwn(SEVERITY, result.level)) {
         throw new Error('malformed SARIF ' + path + ': result level is invalid');
@@ -209,14 +356,26 @@ function fromSarif(path, toolHint) {
       const loc = r.locations?.[0]?.physicalLocation;
       const file = loc?.artifactLocation?.uri || '';
       const line = loc?.region?.startLine || 0;
-      const meta = ruleMeta(run, r.ruleId);
-      const sev = SEVERITY[r.level || meta.defaultConfiguration?.level || 'warning'] || 'warning';
+      const meta = ruleMeta(run, r, path);
+      const ruleId = r.ruleId || meta.id || 'unknown';
+      const securitySeverityScore = parseSecurityScore(meta, path, ruleId);
+      const securitySeverity = securityLevel(securitySeverityScore);
+      const sarifLevel = r.level || meta.defaultConfiguration?.level || 'warning';
+      const levelSeverity = SEVERITY[sarifLevel] || 'warning';
+      // A raw SARIF error is already a deterministic block and may never be downgraded
+      // by a rule-level security score. A valid positive score raises warning/note results.
+      const sev = levelSeverity === 'error' ? 'error' : securitySeverity || levelSeverity;
       out.push({
         tool,
-        ruleId: r.ruleId || meta.id || 'unknown',
+        ruleId,
         file: file.replace(/^file:\/\//, ''),
         line,
         severity: sev,
+        sarifLevel,
+        securitySeverity,
+        securitySeverityScore,
+        securitySeveritySource: securitySeverityScore !== null
+          ? 'rule.properties.security-severity' : null,
         message: (r.message?.text || r.message?.markdown || r.message?.id || '')
           .trim().replace(/\s+/g, ' '),
         cwe: meta.properties?.cwe || meta.properties?.tags?.find((t) => /^CWE-/i.test(t)) || null,
@@ -248,10 +407,26 @@ for (const f of readdirSync(sarifDir).filter((f) => f.endsWith('.sarif'))) {
   all.push(...fromSarif(join(sarifDir, f), f.replace('.sarif', '')));
 }
 
-// Two scanners flagging the same line is one problem, not two.
-const deduped = [...new Map(all.map((f) => [`${f.file}:${f.line}:${f.ruleId}`, f])).values()];
+// Equivalent evidence from the same tool is one problem. Records with conflicting
+// authoritative SARIF level/score data remain separate so a later weaker result cannot
+// erase a blocking dimension needed by a downstream policy.
+const dedupedMap = new Map();
+for (const finding of all) {
+  const key = JSON.stringify([
+    finding.tool,
+    finding.file,
+    finding.line,
+    finding.ruleId,
+    finding.sarifLevel,
+    finding.securitySeverity,
+    finding.securitySeverityScore,
+    finding.securitySeveritySource,
+  ]);
+  if (!dedupedMap.has(key)) dedupedMap.set(key, finding);
+}
+const deduped = [...dedupedMap.values()];
 const scoped = deduped.filter((f) => inScope(f.file, f.line));
-const blocking = scoped.filter((f) => blockOn.includes(f.severity));
+const blocking = scoped.filter((f) => blocksByPolicy(f, blockOn));
 
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, JSON.stringify({ scanners, findings: scoped, blocking: blocking.length }, null, 2));

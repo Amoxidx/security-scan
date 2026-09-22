@@ -74,13 +74,49 @@ const findings = Array.isArray(input)
     ? input.findings
     : null;
 const validScannerSeverities = new Set(['critical', 'high', 'medium', 'low', 'error', 'warning', 'note']);
+const validSecuritySeverities = new Set(['critical', 'high', 'medium', 'low']);
+const validSarifLevels = new Set(['error', 'warning', 'note', 'none']);
+const sarifSeverity = { error: 'error', warning: 'warning', note: 'note', none: 'note' };
+function securityLevelForScore(score) {
+  if (score === null || score === 0) return null;
+  if (score >= 9) return 'critical';
+  if (score >= 7) return 'high';
+  if (score >= 4) return 'medium';
+  return 'low';
+}
+function validSecurityMetadata(finding) {
+  const score = finding.securitySeverityScore;
+  const hasScore = score !== undefined && score !== null;
+  if (finding.securitySeverity !== undefined && finding.securitySeverity !== null &&
+      !validSecuritySeverities.has(finding.securitySeverity)) return false;
+  if (hasScore && (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 10)) return false;
+  if (finding.securitySeveritySource !== undefined && finding.securitySeveritySource !== null &&
+      (typeof finding.securitySeveritySource !== 'string' || !finding.securitySeveritySource.trim())) return false;
+  if (hasScore && (typeof finding.securitySeveritySource !== 'string' || !finding.securitySeveritySource.trim())) return false;
+  if (!hasScore && finding.securitySeveritySource !== undefined && finding.securitySeveritySource !== null) return false;
+  if (hasScore && securityLevelForScore(score) !== finding.securitySeverity) return false;
+  if (!hasScore && finding.securitySeverity !== undefined && finding.securitySeverity !== null) return false;
+  return finding.sarifLevel === undefined || finding.sarifLevel === null || validSarifLevels.has(finding.sarifLevel);
+}
+
+function authoritiesForFinding(finding) {
+  const authorities = new Set();
+  if (finding.sarifLevel && Object.hasOwn(sarifSeverity, finding.sarifLevel)) {
+    authorities.add(sarifSeverity[finding.sarifLevel]);
+  }
+  if (finding.securitySeverity) authorities.add(finding.securitySeverity);
+  if (finding.scannerSeverity) authorities.add(finding.scannerSeverity);
+  if (finding.severity) authorities.add(finding.severity);
+  return authorities;
+}
 const malformedIndex = findings?.findIndex((finding) =>
   !finding || typeof finding !== 'object' || Array.isArray(finding) ||
   typeof finding.tool !== 'string' || !finding.tool.trim() ||
   typeof finding.ruleId !== 'string' || !finding.ruleId.trim() ||
   typeof finding.file !== 'string' ||
   !Number.isInteger(finding.line) || finding.line < 0 ||
-  !validScannerSeverities.has(finding.severity)
+  !validScannerSeverities.has(finding.severity) ||
+  !validSecurityMetadata(finding)
 );
 if (!findings || malformedIndex >= 0) {
   writeIncompleteInput(!findings
@@ -107,7 +143,9 @@ if (!target) {
   // A nonblocking scanner result cannot certify completion of this requested stage.
   const passthrough = findings.map((f) => ({ ...f, verdict: 'needs_human', reason: 'not triaged' }));
   const blockOn = config.gate.blockOn || ['critical', 'high', 'error'];
-  const stillBlocking = passthrough.filter((f) => blockOn.includes(f.severity));
+  const stillBlocking = passthrough.filter((f) =>
+    [...authoritiesForFinding(f)].some((authority) => blockOn.includes(authority)),
+  );
   const passthroughExit = stillBlocking.length ? 1 : 3;
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, JSON.stringify({
@@ -231,8 +269,7 @@ const kept = triaged.filter((f) => BLOCKING_VERDICTS.has(f.verdict));
  * Soft severities (warning/note) remain dismissible when the model is confident.
  */
 function isBlocking(f) {
-  const scannerSev = f.scannerSeverity || f.severity;
-  if (blockOn.includes(scannerSev)) return true;
+  if ([...authoritiesForFinding(f)].some((authority) => blockOn.includes(authority))) return true;
   if (!BLOCKING_VERDICTS.has(f.verdict)) return false;
   return blockOn.includes(f.severity);
 }
@@ -260,6 +297,11 @@ function artifactRecord(f) {
     message: s(f.message, 2000),
     cwe: f.cwe == null ? null : s(f.cwe, 64),
     class: f.class == null ? null : s(f.class, 64),
+    sarifLevel: f.sarifLevel == null ? null : s(f.sarifLevel, 32),
+    securitySeverity: f.securitySeverity == null ? null : s(f.securitySeverity, 32),
+    securitySeverityScore: typeof f.securitySeverityScore === 'number' && Number.isFinite(f.securitySeverityScore)
+      ? f.securitySeverityScore : null,
+    securitySeveritySource: f.securitySeveritySource == null ? null : s(f.securitySeveritySource, 128),
   };
 }
 
@@ -294,7 +336,7 @@ console.log(
 if (dropped.length) {
   console.log('\nDismissed (recorded in the artifact; scanner blockOn still applies):');
   for (const f of dropped) {
-    const override = blockOn.includes(f.scannerSeverity || f.severity) ? ' [still blocking]' : '';
+    const override = [...authoritiesForFinding(f)].some((authority) => blockOn.includes(authority)) ? ' [still blocking]' : '';
     console.log(`  ${f.file}:${f.line} ${f.ruleId}${override}\n    ${f.reason}`);
   }
 }

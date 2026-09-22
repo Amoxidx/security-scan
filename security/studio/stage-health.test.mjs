@@ -22,6 +22,7 @@ const ACTUAL_CHECK_PR = join(ROOT, 'security/studio/check-pr.mjs');
 const FIXTURE_ROOT = mkdtempSync(join(tmpdir(), 'studio-stage-fixture-'));
 const CHECK_PR = join(FIXTURE_ROOT, 'security/studio/check-pr.mjs');
 const HARNESS = join(ROOT, 'security/redteam/harness.mjs');
+const TRIAGE = join(ROOT, 'security/redteam/triage.mjs');
 
 const WORK = mkdtempSync(join(tmpdir(), 'studio-stage-health-'));
 cpSync(join(ROOT, 'security'), join(FIXTURE_ROOT, 'security'), { recursive: true });
@@ -181,6 +182,16 @@ elif [ "$FAKE_SCANNERS_MODE" = blocking-sarif ]; then
 elif [ "$FAKE_SCANNERS_MODE" = warning-sarif ]; then
   printf '%s' '[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"scanned"}]' > "$2/scanners.json"
   printf '%s' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake"}},"results":[{"ruleId":"R-warning","level":"warning","message":{"text":"nonblocking scanner finding"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src.js"},"region":{"startLine":1}}}]}]}]}' > "$2/fake.sarif"
+elif [ "$FAKE_SCANNERS_MODE" = security-score-warning ]; then
+  printf '%s' '[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"scanned"}]' > "$2/scanners.json"
+  printf '%s' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-score","properties":{"security-severity":"9.1"}}]}},"results":[{"ruleId":"R-score","level":"warning","message":{"text":"high score scanner finding"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src.js"},"region":{"startLine":1}}}]}]}]}' > "$2/fake.sarif"
+elif [ "$FAKE_SCANNERS_MODE" = error-score-critical ]; then
+  printf '%s' '[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"scanned"}]' > "$2/scanners.json"
+  printf '%s' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-error-score","properties":{"security-severity":"9.0"}}]}},"results":[{"ruleId":"R-error-score","level":"error","message":{"text":"error and critical authorities"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src.js"},"region":{"startLine":1}}}]}]}]}' > "$2/fake.sarif"
+elif [ "$FAKE_SCANNERS_MODE" = authority-collision ]; then
+  printf '%s' '[{"tool":"fake","status":"ok","reasonCode":"completed","detail":"scanned"},{"tool":"other","status":"ok","reasonCode":"completed","detail":"scanned"}]' > "$2/scanners.json"
+  printf '%s' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"fake","rules":[{"id":"R-collision","properties":{"security-severity":"9.0"}}]}},"results":[{"ruleId":"R-collision","level":"warning","message":{"text":"critical authority"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src.js"},"region":{"startLine":1}}}]}]}]}' > "$2/fake.sarif"
+  printf '%s' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"other","rules":[{"id":"R-collision","properties":{"security-severity":"1.0"}}]}},"results":[{"ruleId":"R-collision","level":"error","message":{"text":"error authority"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src.js"},"region":{"startLine":1}}}]}]}]}' > "$2/other.sarif"
 elif [ "$FAKE_SCANNERS_MODE" = empty-sarif ]; then
   printf '%s' '[{"tool":"fake","status":"ok","detail":"scanned"}]' > "$2/scanners.json"
   printf '%s' '{"version":"2.1.0","runs":[]}' > "$2/fake.sarif"
@@ -451,7 +462,167 @@ test('blocking scanner finding remains blocking when AI is explicitly skipped', 
   assert.match(gate.reasons.join(';'), /scanner error: R-block/);
 });
 
-test('configured warning severity blocks under AI skip even when normalize default does not', () => {
+test('security-severity high score remains blocking through false-positive triage', () => {
+  const out = mkdtempSync(join(WORK, 'scanner-security-score-triage-'));
+  const originalTriage = readFileSync(join(FIXTURE_ROOT, 'security/redteam/triage.mjs'));
+  const result = withFixtureFalsePositiveTriage(() => runCheck(makeSubject(), out, 'clean', {
+    skipScanners: false,
+    scannerMode: 'security-score-warning',
+    noLab: true,
+  }));
+  assert.deepEqual(readFileSync(join(FIXTURE_ROOT, 'security/redteam/triage.mjs')), originalTriage);
+  const { gate } = artifacts(out);
+  const normalized = JSON.parse(readFileSync(join(out, 'findings.json'), 'utf8'));
+  const triaged = JSON.parse(readFileSync(join(out, 'triaged.json'), 'utf8'));
+  assert.equal(result.rc, 1);
+  assert.equal(gate.blocked, true);
+  assert.equal(normalized.blocking, 1);
+  assert.equal(normalized.findings[0].severity, 'critical');
+  assert.equal(normalized.findings[0].sarifLevel, 'warning');
+  assert.equal(normalized.findings[0].securitySeverity, 'critical');
+  assert.equal(normalized.findings[0].securitySeverityScore, 9.1);
+  assert.equal(triaged.triaged[0].scannerSeverity, 'critical');
+  assert.equal(triaged.triaged[0].securitySeverityScore, 9.1);
+  assert.equal(triaged.blocking, 1);
+  assert.equal(triaged.dismissedButBlocked, 1);
+});
+
+test('critical policy blocks a single raw error with critical score', () => {
+  const out = mkdtempSync(join(WORK, 'scanner-error-score-critical-'));
+  const result = withFixtureBlockOn(['critical'], () => runCheck(makeSubject(), out, 'clean', {
+    skipScanners: false,
+    scannerMode: 'error-score-critical',
+    skipAI: true,
+    noLab: true,
+  }));
+  const { gate } = artifacts(out);
+  const normalized = JSON.parse(readFileSync(join(out, 'findings.json'), 'utf8'));
+  assert.equal(result.rc, 1);
+  assert.equal(gate.blocked, true);
+  assert.equal(normalized.blocking, 1);
+  assert.equal(normalized.findings[0].sarifLevel, 'error');
+  assert.equal(normalized.findings[0].securitySeverity, 'critical');
+  assert.match(gate.reasons.join('; '), /scanner error: R-error-score/);
+});
+
+test('error-only policy does not treat a warning score as an error', () => {
+  const out = mkdtempSync(join(WORK, 'scanner-score-error-only-'));
+  const result = withFixtureBlockOn(['error'], () => runCheck(makeSubject(), out, 'clean', {
+    skipScanners: false,
+    scannerMode: 'security-score-warning',
+    skipAI: true,
+    noLab: true,
+  }));
+  const { gate } = artifacts(out);
+  const normalized = JSON.parse(readFileSync(join(out, 'findings.json'), 'utf8'));
+  assert.equal(result.rc, 0);
+  assert.equal(gate.blocked, false);
+  assert.equal(normalized.blocking, 0);
+  assert.equal(normalized.findings[0].sarifLevel, 'warning');
+  assert.equal(normalized.findings[0].securitySeverity, 'critical');
+});
+
+test('triage cannot dismiss a score authority under a critical-only policy', () => {
+  const out = mkdtempSync(join(WORK, 'scanner-score-triage-critical-only-'));
+  const result = withFixtureBlockOn(['critical'], () => withFixtureTriageConfig(() => runCheck(makeSubject(), out, 'clean', {
+    skipScanners: false,
+    scannerMode: 'security-score-warning',
+    noLab: true,
+  })));
+  const { gate } = artifacts(out);
+  const triaged = JSON.parse(readFileSync(join(out, 'triaged.json'), 'utf8'));
+  assert.equal(result.rc, 1);
+  assert.equal(gate.blocked, true);
+  assert.equal(triaged.triaged[0].verdict, 'false_positive');
+  assert.equal(triaged.triaged[0].sarifLevel, 'warning');
+  assert.equal(triaged.triaged[0].securitySeverity, 'critical');
+  assert.equal(triaged.blocking, 1);
+  assert.equal(triaged.dismissedButBlocked, 1);
+});
+
+test('conflicting tool authorities survive deduplication under both policies', () => {
+  for (const policy of ['critical', 'error']) {
+    const out = mkdtempSync(join(WORK, 'scanner-authority-collision-' + policy + '-'));
+    const result = withFixtureBlockOn([policy], () => runCheck(makeSubject(), out, 'clean', {
+      skipScanners: false,
+      scannerMode: 'authority-collision',
+      skipAI: true,
+      noLab: true,
+    }));
+    const { gate } = artifacts(out);
+    const normalized = JSON.parse(readFileSync(join(out, 'findings.json'), 'utf8'));
+    assert.equal(result.rc, 1);
+    assert.equal(gate.blocked, true);
+    assert.equal(normalized.findings.length, 2);
+    assert.deepEqual(new Set(normalized.findings.map((f) => f.tool)), new Set(['fake', 'other']));
+    assert.equal(normalized.blocking, 1);
+    assert.equal(gate.reasons.filter((reason) => reason.startsWith('scanner ')).length, 1);
+  }
+});
+
+test('direct triage keeps score authority when the model says false positive', () => {
+  const dir = mkdtempSync(join(WORK, 'direct-triage-score-authority-'));
+  const findings = join(dir, 'findings.json');
+  const config = join(dir, 'config.json');
+  const out = join(dir, 'triaged.json');
+  writeFileSync(findings, JSON.stringify({ findings: [{
+    tool: 'fake', ruleId: 'R-score', file: 'src.js', line: 1, severity: 'warning',
+    sarifLevel: 'warning', securitySeverity: 'critical', securitySeverityScore: 9,
+    securitySeveritySource: 'rule.properties.security-severity', message: 'score authority',
+  }] }));
+  writeFileSync(config, JSON.stringify({
+    providers: { fake: { type: 'cli', command: [NODE, FAKE_TRIAGE_PROVIDER], promptArg: false, modelFlag: '--model', timeoutMs: 5000 } },
+    defaultProvider: 'fake', triage: { model: 'fake:triage' }, report: { model: 'fake:triage' },
+    gate: { blockOn: ['critical'] },
+  }));
+  let error;
+  try {
+    execFileSync(NODE, [TRIAGE, '--findings', findings, '--config', config, '--repo', ROOT, '--out', out], {
+      cwd: ROOT, env: { ...process.env }, encoding: 'utf8',
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.equal(error?.status, 1);
+  const triaged = JSON.parse(readFileSync(out, 'utf8'));
+  assert.equal(triaged.triaged[0].verdict, 'false_positive');
+  assert.equal(triaged.blocking, 1);
+  assert.equal(triaged.dismissedButBlocked, 1);
+});
+
+test('provider-unavailable triage preserves score authority under a critical-only policy', () => {
+  const dir = mkdtempSync(join(WORK, 'direct-triage-provider-unavailable-'));
+  const findings = join(dir, 'findings.json');
+  const config = join(dir, 'config.json');
+  const out = join(dir, 'triaged.json');
+  writeFileSync(findings, JSON.stringify({ findings: [{
+    tool: 'fake', ruleId: 'R-score', file: 'src.js', line: 1, severity: 'warning',
+    sarifLevel: 'warning', securitySeverity: 'critical', securitySeverityScore: 9,
+    securitySeveritySource: 'rule.properties.security-severity', message: 'score authority',
+  }] }));
+  writeFileSync(config, JSON.stringify({
+    providers: {}, defaultProvider: 'missing',
+    triage: { model: 'missing:triage' }, report: { model: 'missing:triage' },
+    gate: { blockOn: ['critical'] },
+  }));
+  let error;
+  try {
+    execFileSync(NODE, [TRIAGE, '--findings', findings, '--config', config, '--repo', ROOT, '--out', out], {
+      cwd: ROOT, env: { ...process.env }, encoding: 'utf8',
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.equal(error?.status, 1);
+  const triaged = JSON.parse(readFileSync(out, 'utf8'));
+  assert.equal(triaged.status, 'incomplete');
+  assert.equal(triaged.outcome, 'block');
+  assert.equal(triaged.exit, 1);
+  assert.equal(triaged.blocking, 1);
+  assert.equal(triaged.reasonCodes[0], 'provider_unavailable');
+});
+
+test('Studio forwards configured warning policy to normalize under AI skip', () => {
   const out = mkdtempSync(join(WORK, 'scanner-warning-configured-block-'));
   const configPath = join(FIXTURE_ROOT, 'security/redteam/config.json');
   const originalConfig = readFileSync(configPath);
@@ -466,7 +637,7 @@ test('configured warning severity blocks under AI skip even when normalize defau
   assert.deepEqual(readFileSync(configPath), originalConfig);
   assert.equal(result.rc, 1);
   assert.equal(gate.blocked, true);
-  assert.equal(normalized.blocking, 0);
+  assert.equal(normalized.blocking, 1);
   assert.equal(normalized.findings[0].severity, 'warning');
   assert.match(gate.reasons.join(';'), /scanner warning: R-warning/);
 });
@@ -558,6 +729,33 @@ for (const triageMode of ['invalid-verdict', 'invalid-severity']) {
   });
 }
 
+function withFixtureScoreSourceMutation(mutation, callback) {
+  const triagePath = join(FIXTURE_ROOT, 'security/redteam/triage.mjs');
+  const original = readFileSync(triagePath);
+  const fakeTriage = [
+    "#!/usr/bin/env node",
+    "import { readFileSync, writeFileSync } from 'node:fs';",
+    "const args = process.argv.slice(2);",
+    "const input = JSON.parse(readFileSync(args[args.indexOf('--findings') + 1], 'utf8'));",
+    "const out = args[args.indexOf('--out') + 1];",
+    "const triaged = input.findings.map((finding) => {",
+    "  const row = { ...finding, scannerSeverity: finding.severity, verdict: 'false_positive', reason: 'schema mutation fixture' };",
+    mutation === 'absent'
+      ? "  delete row.securitySeveritySource;"
+      : "  row.securitySeveritySource = null;",
+    "  return row;",
+    "});",
+    "writeFileSync(out, JSON.stringify({ schemaVersion: 1, stage: 'triage', runId: process.env.SECURITY_STUDIO_RUN_ID, status: 'complete', outcome: 'block', exit: 1, reasonCodes: [], triaged, dropped: triaged.length, blocking: triaged.length, dismissedButBlocked: triaged.length }, null, 2));",
+    "process.exit(1);",
+  ].join('\n') + '\n';
+  writeFileSync(triagePath, fakeTriage);
+  try {
+    return callback();
+  } finally {
+    writeFileSync(triagePath, original);
+  }
+}
+
 test('complete triage artifact must account for every scanner finding', () => {
   const out = mkdtempSync(join(WORK, 'triage-coverage-mismatch-'));
   const result = withFixtureEmptyTriage(() => runCheck(makeSubject(), out, 'clean', {
@@ -571,6 +769,23 @@ test('complete triage artifact must account for every scanner finding', () => {
   assert.match(gate.reasons.join(';'), /triage_coverage_mismatch/);
   assert.match(report, /triage execution incomplete/);
 });
+
+for (const mutation of ['absent', 'null']) {
+  test('score provenance ' + mutation + ' is required in complete triage rows', () => {
+    const out = mkdtempSync(join(WORK, 'triage-score-source-' + mutation + '-'));
+    const result = withFixtureScoreSourceMutation(mutation, () => runCheck(makeSubject(), out, 'clean', {
+      skipScanners: false,
+      scannerMode: 'security-score-warning',
+      noLab: true,
+    }));
+    const { gate } = artifacts(out);
+    const triaged = JSON.parse(readFileSync(join(out, 'triaged.json'), 'utf8'));
+    assert.equal(result.rc, 2);
+    assert.equal(gate.blocked, true);
+    assert.equal(triaged.status, 'complete');
+    assert.match(gate.reasons.join(';'), /triage_row_invalid/);
+  });
+}
 
 test('normal triage true-positive remains blocking with complete artifact', () => {
   const out = mkdtempSync(join(WORK, 'triage-true-positive-'));

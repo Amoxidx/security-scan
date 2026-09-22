@@ -60,6 +60,32 @@ const MARKER = '<!-- security-scan-studio -->';
 const STAGE_STATUS_SCHEMA = 1;
 const TRIAGE_VERDICTS = new Set(['true_positive', 'false_positive', 'needs_human']);
 const TRIAGE_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'error', 'warning', 'note']);
+const SECURITY_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
+const SARIF_LEVELS = new Set(['error', 'warning', 'note', 'none']);
+const SARIF_SEVERITY = { error: 'error', warning: 'warning', note: 'note', none: 'note' };
+
+function securityLevelForScore(score) {
+  if (score === null || score === 0) return null;
+  if (score >= 9) return 'critical';
+  if (score >= 7) return 'high';
+  if (score >= 4) return 'medium';
+  return 'low';
+}
+
+function findingAuthorities(finding) {
+  const authorities = new Set();
+  if (finding?.sarifLevel && Object.hasOwn(SARIF_SEVERITY, finding.sarifLevel)) {
+    authorities.add(SARIF_SEVERITY[finding.sarifLevel]);
+  }
+  if (finding?.securitySeverity) authorities.add(finding.securitySeverity);
+  if (finding?.scannerSeverity) authorities.add(finding.scannerSeverity);
+  if (finding?.severity) authorities.add(finding.severity);
+  return authorities;
+}
+
+function blocksByPolicy(finding, blockOn) {
+  return [...findingAuthorities(finding)].some((authority) => blockOn.has(authority));
+}
 
 // ---------------------------------------------------------------- args
 
@@ -681,12 +707,19 @@ function stageScanners(subject, outDir) {
   const diffPath = buildDiff(subject, outDir);
 
   const findingsPath = join(outDir, 'findings.json');
+  const scannerConfig = JSON.parse(readFileSync(CONFIG, 'utf8'));
+  const blockOn = Array.isArray(scannerConfig.gate?.blockOn)
+    ? scannerConfig.gate.blockOn.join(',')
+    : 'critical,high,error';
   // Tree mode: still pass the synthetic full diff so normalize scopes to tracked files.
+  // The standalone normalizer defaults to raw SARIF error; Studio supplies its configured
+  // policy explicitly so the artifact and final gate use the same authorities.
   const n = run('node', [
     NORMALIZE,
     '--sarif', sarifDir,
     '--diff', diffPath,
     '--out', findingsPath,
+    '--block-on', blockOn,
     '--no-gate',
   ], { cwd: subject.workdir, env: stageEnv() });
   writeFileSync(join(outDir, 'normalize.log'), `${n.stdout}\n${n.stderr}`);
@@ -740,10 +773,30 @@ function findingKey(f) {
     capped(f?.ruleId, 256),
     capped(f?.file, 1024),
     Number.isFinite(Number(f?.line)) ? Number(f.line) : 0,
+    capped(f?.sarifLevel, 32),
+    capped(f?.securitySeverity, 32),
+    f?.securitySeverityScore == null ? null : Number(f.securitySeverityScore),
+    capped(f?.securitySeveritySource, 128),
   ]);
 }
 
 function validTriageRow(f) {
+  const hasScore = f?.securitySeverityScore !== undefined && f?.securitySeverityScore !== null;
+  const scoreValid = !hasScore ||
+    (typeof f.securitySeverityScore === 'number' && Number.isFinite(f.securitySeverityScore) &&
+      f.securitySeverityScore >= 0 && f.securitySeverityScore <= 10);
+  const securityLevelValid = f?.securitySeverity === undefined || f?.securitySeverity === null ||
+    SECURITY_SEVERITIES.has(f?.securitySeverity);
+  const sarifLevelValid = f?.sarifLevel === undefined || f?.sarifLevel === null ||
+    SARIF_LEVELS.has(f?.sarifLevel);
+  const sourceValid = f?.securitySeveritySource === undefined || f?.securitySeveritySource === null ||
+    (typeof f?.securitySeveritySource === 'string' && f.securitySeveritySource.trim().length > 0);
+  const scoreSourceValid = !hasScore ||
+    (typeof f?.securitySeveritySource === 'string' && f.securitySeveritySource.trim().length > 0);
+  const authorityPairValid = !hasScore ||
+    (scoreSourceValid && securityLevelForScore(f.securitySeverityScore) === f.securitySeverity);
+  const sourcePairValid = hasScore || f?.securitySeveritySource === undefined || f.securitySeveritySource === null;
+  const absentScoreValid = hasScore || f?.securitySeverity === undefined || f.securitySeverity === null;
   return Boolean(
     f && typeof f === 'object' && !Array.isArray(f) &&
     typeof f.tool === 'string' &&
@@ -753,7 +806,9 @@ function validTriageRow(f) {
     TRIAGE_VERDICTS.has(f.verdict) &&
     TRIAGE_SEVERITIES.has(f.severity) &&
     TRIAGE_SEVERITIES.has(f.scannerSeverity) &&
-    typeof f.reason === 'string' && f.reason.length > 0
+    typeof f.reason === 'string' && f.reason.length > 0 &&
+    scoreValid && securityLevelValid && sarifLevelValid && sourceValid &&
+    authorityPairValid && sourcePairValid && absentScoreValid
   );
 }
 
@@ -1041,13 +1096,13 @@ function finalGate({ staticResult, scannersResult, triageResult, harnessResult, 
   // stage preserves scannerSeverity, but this second gate also fails closed if that artifact
   // is malformed or a provider incorrectly claims a blocking finding is a false positive.
   for (const f of scannersResult?.findings || []) {
-    if (!blockOn.has(f.severity)) continue;
+    if (!blocksByPolicy(f, blockOn)) continue;
     blocked = true;
     reasons.push('scanner ' + f.severity + ': ' + (f.ruleId || f.title || f.file));
   }
 
   if (triageResult?.survivors) {
-    const bad = triageResult.survivors.filter((f) => blockOn.has(f.severity) && f.verdict === 'true_positive');
+    const bad = triageResult.survivors.filter((f) => blocksByPolicy(f, blockOn) && f.verdict === 'true_positive');
     for (const f of bad) {
       blocked = true;
       reasons.push(`scanner true_positive: ${f.ruleId || f.title || f.file}`);
