@@ -25,6 +25,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { complete as providerComplete, resolveModel, listUnavailable } from './providers.mjs';
 import { completeHunt } from './hunt-models.mjs';
 
@@ -45,6 +46,22 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 const outDir = args.out || 'security-report';
 const config = JSON.parse(readFileSync(args.config || join(HERE, 'config.json'), 'utf8'));
+const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
+const EXECUTION_SCHEMA = 1;
+const runId = process.env.SECURITY_STUDIO_RUN_ID || `harness-${process.pid}-${randomUUID()}`;
+
+function writeExecution({ status, outcome, exit, reasonCodes = [] }) {
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, 'execution.json'), JSON.stringify({
+    schemaVersion: EXECUTION_SCHEMA,
+    stage: 'harness',
+    runId,
+    status,
+    outcome,
+    exit,
+    reasonCodes,
+  }, null, 2));
+}
 
 if (!args.diff) {
   console.error('--diff <file> is required');
@@ -53,6 +70,10 @@ if (!args.diff) {
 
 const diff = readFileSync(args.diff, 'utf8');
 if (!diff.trim()) {
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, 'findings.json'), '[]');
+  writeFileSync(join(outDir, 'report.md'), '## AI security review\n\nEmpty diff — nothing to review.\n');
+  writeExecution({ status: 'complete', outcome: 'pass', exit: 0 });
   console.log('Empty diff — nothing to review.');
   process.exit(0);
 }
@@ -75,6 +96,7 @@ if (truncated) {
       `## AI security review\n\n**Blocked:** diff exceeds \`gate.maxDiffBytes\` ` +
         `(${diff.length} > ${config.gate.maxDiffBytes}). The unreviewed tail must not pass silently.\n`
     );
+    writeExecution({ status: 'failed', outcome: 'block', exit: 1, reasonCodes: ['diff_too_large'] });
     process.exit(1);
   }
 }
@@ -153,16 +175,25 @@ function dedupe(findings) {
 
 // ---------------------------------------------------------------- stage 3: verify
 
+function targetIdentity(target) {
+  return target.providerName + ':' + target.model;
+}
+
 async function verify(finding) {
   const user = verifyPrompt
     .replace('{{FINDING}}', wrapUntrusted(JSON.stringify(finding, null, 2)))
     .replace('{{CODE}}', wrapUntrusted(diffText));
 
   // Never let the model that found it be its only judge — a model refuting its own finding
-  // confirms itself. Fall back to the full panel only if that would leave no verifier.
+  // confirms itself. Only configured, distinct verifier identities count.
   const usable = config.verify.models.map((m) => resolveModel(config, m)).filter(Boolean);
-  const others = usable.filter((t) => t.spec !== finding.huntModel);
-  const panel = others.length ? others : usable;
+  // A configured verifier identity may occur more than once, including through
+  // a bare default-provider alias; duplicates are one vote.
+  // Never fall back to the hunting identity: a self-verdict is not independent evidence.
+  const distinct = [...new Map(usable.map((target) => [targetIdentity(target), target])).values()];
+  const hunter = resolveModel(config, finding.huntModel);
+  const hunterIdentity = hunter ? targetIdentity(hunter) : null;
+  const panel = distinct.filter((target) => targetIdentity(target) !== hunterIdentity);
 
   // Empty panel: do not silently drop candidates. Pass through as unverified so blocking
   // still follows gate.blockOn (same idea as triage passthrough without a model).
@@ -182,16 +213,22 @@ async function verify(finding) {
       try {
         const out = await providerComplete(config, target, systemPrompt, user);
         const parsed = parseJson(out, null);
-        // An error or unparseable answer is inconclusive, not a refutation.
-        if (!parsed || typeof parsed.refuted !== 'boolean') {
+        // An error, unparseable answer, or invalid severity correction is
+        // inconclusive, not a downgrade of the hunt severity.
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+            typeof parsed.refuted !== 'boolean' ||
+            (parsed.severity !== undefined && !VALID_SEVERITIES.has(parsed.severity))) {
           return {
             model: target.spec,
             inconclusive: true,
             refuted: false,
-            reason: 'unparseable verdict',
+            reason: 'unparseable or invalid verdict',
           };
         }
-        return { model: target.spec, ...parsed, inconclusive: false };
+        // Keep verifier identity and conclusiveness from the configured target and
+        // execution path. Model output may describe a verdict, but cannot impersonate
+        // another verifier or mark an invalid result conclusive.
+        return { ...parsed, model: target.spec, inconclusive: false };
       } catch (err) {
         return {
           model: target.spec,
@@ -217,8 +254,20 @@ async function verify(finding) {
   }
 
   const refutations = conclusive.filter((v) => v.refuted === true).length;
-  // Threshold applies to verdicts that actually judged, not to errors/timeouts.
-  const threshold = Math.min(config.verify.refuteThreshold, conclusive.length);
+  // The configured threshold is a minimum quorum. Inconclusive/error responses do
+  // not lower it: one refuter cannot clear a finding when two independent verdicts
+  // were required. Carry the candidate forward as unverified until the quorum exists.
+  const threshold = config.verify.refuteThreshold;
+  if (conclusive.length < threshold) {
+    return {
+      ...finding,
+      verdicts,
+      refutations,
+      survived: true,
+      unverified: true,
+      severity: finding.severity,
+    };
+  }
   const survived = refutations < threshold;
 
   // The verify stage owns severity; the hunt stage's label is a proposal.
@@ -265,13 +314,26 @@ async function main() {
     console.log('\nNo model provider is reachable — skipping the AI review stage.');
     console.log('Configure a subscription CLI or an API key; see security/README.md.');
     console.log('The deterministic gate (security/gate/static-checks.sh) still applies.');
-    return 0;
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(join(outDir, 'findings.json'), '[]');
+    writeFileSync(join(outDir, 'report.md'),
+      '## AI security review\n\n**Inconclusive:** no configured security review provider was reachable.\n');
+    writeExecution({
+      status: 'incomplete', outcome: 'inconclusive', exit: 3,
+      reasonCodes: ['providers_unavailable'],
+    });
+    return 3;
   }
   const activeLenses = config.hunt.lenses.filter((l) => {
     const s = config.hunt.models[l];
     return Boolean(s) && [s, ...(config.hunt.fallbackModels || [])]
       .some((candidate) => resolveModel(config, candidate));
   });
+  // A configured lens with no model is an intentional skip. A configured model
+  // that cannot resolve is a requested execution that never happened and must
+  // keep an otherwise empty result inconclusive.
+  const requestedLenses = config.hunt.lenses.filter((l) => Boolean(config.hunt.models[l]));
+  const unavailableLenses = requestedLenses.filter((l) => !activeLenses.includes(l));
   const hasVerifier = config.verify.models.some((s) => resolveModel(config, s));
   if (!hasVerifier) {
     console.warn(
@@ -304,6 +366,13 @@ async function main() {
       `## AI security review\n\n**Hunt stage failed:** all ${activeLenses.length} active ` +
         `lens(es) errored. This is a configuration/runtime error, not a clean pass.\n\n${detail}\n`
     );
+    writeExecution({
+      status: 'incomplete', outcome: 'inconclusive', exit: 3,
+      reasonCodes: [
+        'hunt_failed',
+        ...(unavailableLenses.length ? ['requested_lens_unavailable'] : []),
+      ],
+    });
     console.error(
       `All ${activeLenses.length} active lens(es) failed — gate cannot run. Exit 3.`
     );
@@ -320,8 +389,20 @@ async function main() {
       join(outDir, 'report.md'),
       `## AI security review\n\nNo findings.${failNote}`
     );
-    console.log('No findings. Gate passes.');
-    return 0;
+    const reasonCodes = [];
+    if (huntFailures.length) reasonCodes.push('hunt_failed');
+    if (requestedLenses.length > 0 && activeLenses.length === 0) reasonCodes.push('no_active_hunts');
+    if (unavailableLenses.length) reasonCodes.push('requested_lens_unavailable');
+    if (truncated) reasonCodes.push('diff_truncated');
+    const incomplete = reasonCodes.length > 0;
+    writeExecution({
+      status: incomplete ? 'incomplete' : 'complete',
+      outcome: incomplete ? 'inconclusive' : 'pass',
+      exit: incomplete ? 3 : 0,
+      reasonCodes,
+    });
+    console.log(incomplete ? 'Review incomplete — gate cannot pass.' : 'No findings. Gate passes.');
+    return incomplete ? 3 : 0;
   }
 
   console.log('Verifying (adversarial, k-of-n)...');
@@ -389,6 +470,20 @@ async function main() {
     .join('\n');
   writeFileSync(join(outDir, 'report.md'), md);
 
+  const reasonCodes = [];
+  if (huntFailures.length) reasonCodes.push('hunt_failed');
+  if (unavailableLenses.length) reasonCodes.push('requested_lens_unavailable');
+  if (unverifiedCount) reasonCodes.push('verification_incomplete');
+  if (truncated) reasonCodes.push('diff_truncated');
+  const incomplete = reasonCodes.length > 0;
+  const exit = blocking.length ? 1 : incomplete ? 3 : 0;
+  writeExecution({
+    status: incomplete ? 'incomplete' : 'complete',
+    outcome: blocking.length ? 'block' : incomplete ? 'inconclusive' : 'pass',
+    exit,
+    reasonCodes,
+  });
+
   if (blocking.length) {
     const label = unverifiedCount ? 'finding(s)' : 'verified finding(s)';
     console.error(`\nBLOCKING: ${blocking.length} ${label} at ${config.gate.blockOn.join('/')}:`);
@@ -396,10 +491,10 @@ async function main() {
       const tag = f.unverified ? 'unverified' : 'verified';
       console.error(`  [${f.severity}] (${tag}) ${f.file}:${f.line} — ${f.title}`);
     }
-    return 1;
+    return exit;
   }
-  console.log('Gate passes.');
-  return 0;
+  console.log(incomplete ? 'Review incomplete — gate cannot pass.' : 'Gate passes.');
+  return exit;
 }
 
 main().then(

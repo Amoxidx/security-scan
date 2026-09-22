@@ -273,7 +273,7 @@ echo "=== harness verify (F9) ==="
   cat > "$HDIR/bin/fake-hunt" <<'EOF'
 #!/bin/sh
 cat >/dev/null
-printf '%s\n' '{"findings":[{"title":"Test finding","file":"src/x.js","line":1,"severity":"high","root_cause":"test root cause for dedupe","attacker":"remote","confidence":"high"}]}'
+printf '%s\n' '{"findings":[{"title":"Test finding","file":"src/x.js","line":1,"severity":"high","root_cause":"test root cause for dedupe","attacker_model":"remote","impact":"controlled test impact","guarantee_broken":"test guarantee","how_to_disprove":"inspect the bounded fixture","attack_path":["changed input reaches the test sink"],"confidence":"high"}]}'
 EOF
   chmod +x "$HDIR/bin/fake-hunt"
   cat > "$HDIR/bin/fake-verify" <<'EOF'
@@ -354,7 +354,7 @@ echo "=== harness hunt (F12) ==="
   cat > "$HDIR/bin/fake-hunt" <<'EOF'
 #!/bin/sh
 cat >/dev/null
-printf '%s\n' '{"findings":[{"title":"Critical injection","file":"src/x.js","line":1,"severity":"critical","root_cause":"interpolated shell spawn without sanitise","attacker":"remote","confidence":"high"}]}'
+printf '%s\n' '{"findings":[{"title":"Critical injection","file":"src/x.js","line":1,"severity":"critical","root_cause":"interpolated shell spawn without sanitise","attacker_model":"remote","impact":"controlled test impact","guarantee_broken":"test guarantee","how_to_disprove":"inspect the bounded fixture","attack_path":["changed input reaches the test sink"],"confidence":"high"}]}'
 EOF
   chmod +x "$HDIR/bin/fake-hunt"
   # Verifier confirms (refuted: false) so the finding is not dropped by k-of-n.
@@ -441,9 +441,9 @@ write_error_sarif() {
   local dir="$1"
   mkdir -p "$dir"
   cat > "$dir/scanners.json" <<'EOF'
-[{"tool":"semgrep","status":"ok","detail":"1 result"}]
+[{"tool":"semgrep","status":"ok","reasonCode":"completed","detail":"1 result"}]
 EOF
-  cat > "$dir/test.sarif" <<'EOF'
+  cat > "$dir/semgrep.sarif" <<'EOF'
 {
   "version": "2.1.0",
   "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -691,7 +691,7 @@ EOF
   cat > "$HDIR/bin/fake-hunt" <<'EOF'
 #!/bin/sh
 cat >/dev/null
-printf '%s\n' '{"findings":[{"title":"Critical injection","file":"src/x.js","line":1,"severity":"critical","root_cause":"interpolated shell spawn without sanitise","attacker":"remote","confidence":"high"}]}'
+printf '%s\n' '{"findings":[{"title":"Critical injection","file":"src/x.js","line":1,"severity":"critical","root_cause":"interpolated shell spawn without sanitise","attacker_model":"remote","impact":"controlled test impact","guarantee_broken":"test guarantee","how_to_disprove":"inspect the bounded fixture","attack_path":["changed input reaches the test sink"],"confidence":"high"}]}'
 EOF
   chmod +x "$HDIR/bin/fake-hunt"
   cat > "$HDIR/bin/fake-verify" <<'EOF'
@@ -766,9 +766,19 @@ write_status_only_sarif() {
     fs.writeFileSync(process.argv[1], JSON.stringify([{
       tool: 'semgrep',
       status: process.argv[2],
+      reasonCode: process.argv[2] === 'error'
+        ? 'scanner_exit_failure'
+        : process.argv[2] === 'skipped'
+          ? 'not_applicable_no_lockfile'
+          : 'completed',
       detail: process.argv[3],
     }]));
   " "$dir/scanners.json" "$status" "$detail"
+  if [ "$status" = "ok" ]; then
+    cat > "$dir/semgrep.sarif" <<'EOF'
+{"version":"2.1.0","runs":[]}
+EOF
+  fi
 }
 
 # 17. status error + --no-gate -> exit != 0; output names tool and detail.
@@ -1492,6 +1502,54 @@ echo "=== repro eval finding + fairness math ==="
     case_result "repro.test.mjs executed" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
   elif [ "$RUN_RC" -eq 0 ] && [ "$REPRO_ANY" -eq 0 ]; then
     case_result "repro.test.mjs reported cases" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+# ---------------------------------------------------------------- canonical child regression suites
+
+echo "=== canonical child regression suites ==="
+
+{
+  STAGE_HEALTH_TEST="$ROOT/security/studio/stage-health.test.mjs"
+  run node "$STAGE_HEALTH_TEST"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "stage-health.test.mjs" 1
+  else
+    case_result "stage-health.test.mjs" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  TRIAGE_INPUT_TEST="$ROOT/security/redteam/triage-input.test.mjs"
+  run node "$TRIAGE_INPUT_TEST"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "triage-input.test.mjs" 1
+  else
+    case_result "triage-input.test.mjs" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+}
+
+{
+  SCANNERS_TEST="$ROOT/security/scanners/scanners.test.sh"
+  if [ -x "$SCANNERS_TEST" ]; then
+    run bash "$SCANNERS_TEST"
+    if [ "$RUN_RC" -eq 0 ]; then
+      case_result "scanners.test.sh" 1
+    else
+      case_result "scanners.test.sh" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+    fi
+  else
+    case_result "scanners.test.sh" 0 "missing executable: $SCANNERS_TEST"
+  fi
+}
+
+{
+  STUDIO_TEST="$ROOT/security/studio/studio.test.sh"
+  run bash "$STUDIO_TEST"
+  if [ "$RUN_RC" -eq 0 ]; then
+    case_result "studio.test.sh" 1
+  else
+    case_result "studio.test.sh" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
   fi
 }
 

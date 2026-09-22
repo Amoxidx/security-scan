@@ -88,12 +88,66 @@ const scope = args.diff && existsSync(args.diff) ? addedLines(readFileSync(args.
 
 /** A finding counts as in scope if it sits on, or within 3 lines of, a touched line. */
 function inScope(file, line) {
-  if (!scope) return true;
+  if (!scope || !file) return true;
   for (const [f, lines] of scope) {
     if (!f.endsWith(file) && !file.endsWith(f)) continue;
     for (const l of lines) if (Math.abs(l - line) <= 3) return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------- scanner metadata
+
+const SCANNER_STATUSES = new Set(['ok', 'skipped', 'degraded', 'error']);
+const SKIPPED_NEUTRAL_REASON = 'not_applicable_no_lockfile';
+const REASON_CODES = {
+  ok: new Set(['completed']),
+  skipped: new Set([SKIPPED_NEUTRAL_REASON]),
+  degraded: new Set(['semgrep_rule_parse_error']),
+  error: new Set([
+    'executable_missing',
+    'osv_backend_unreachable',
+    'report_missing',
+    'scanner_exit_failure',
+    'report_malformed',
+    'report_invalid_shape',
+  ]),
+};
+
+function readScannerMetadata(path, dir) {
+  if (!existsSync(path)) throw new Error('malformed scanner metadata: missing scanners.json');
+  let value;
+  try {
+    value = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    throw new Error('malformed scanner metadata: ' + err.message);
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('malformed scanner metadata: expected a non-empty scanner status array');
+  }
+  const seen = new Set();
+  const sarifFiles = new Set(readdirSync(dir).filter((f) => f.endsWith('.sarif')));
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+        typeof entry.tool !== 'string' || !entry.tool.trim() ||
+        !SCANNER_STATUSES.has(entry.status) || seen.has(entry.tool)) {
+      throw new Error('malformed scanner metadata: invalid or duplicate tool status');
+    }
+    seen.add(entry.tool);
+    if (entry.reasonCode !== undefined &&
+        (typeof entry.reasonCode !== 'string' || !entry.reasonCode.trim())) {
+      throw new Error('malformed scanner metadata: ' + entry.tool + ' has an invalid reasonCode');
+    }
+    if ((entry.status !== 'ok' && !REASON_CODES[entry.status]?.has(entry.reasonCode)) ||
+        (entry.status === 'ok' && entry.reasonCode !== undefined &&
+          !REASON_CODES.ok.has(entry.reasonCode))) {
+      throw new Error('malformed scanner metadata: ' + entry.tool + ' has an unknown or missing reasonCode');
+    }
+    if (entry.status === 'ok' && !sarifFiles.has(entry.tool + '.sarif')) {
+      throw new Error('malformed scanner metadata: ' + entry.tool + ' is ok without ' + entry.tool + '.sarif');
+    }
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------- SARIF
@@ -109,9 +163,45 @@ function fromSarif(path, toolHint) {
   let doc;
   try {
     doc = JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    return [];
+  } catch (err) {
+    throw new Error(`malformed SARIF ${path}: ${err.message}`);
   }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc) ||
+      doc.version !== '2.1.0' || !Array.isArray(doc.runs)) {
+    throw new Error(`malformed SARIF ${path}: expected version 2.1.0 with runs[]`);
+  }
+  for (const run of doc.runs) {
+    const driver = run?.tool?.driver;
+    if (!run || typeof run !== 'object' || Array.isArray(run) ||
+        !driver || typeof driver !== 'object' || Array.isArray(driver) ||
+        typeof driver.name !== 'string' || !driver.name.trim() ||
+        ('results' in run && (!Array.isArray(run.results) ||
+          run.results.some((result) => !result || typeof result !== 'object' || Array.isArray(result))))) {
+      throw new Error(`malformed SARIF ${path}: invalid run structure`);
+    }
+  }
+  for (const run of doc.runs) {
+    for (const result of run.results || []) {
+      const message = result.message;
+      const hasMessageText = message && typeof message === 'object' && !Array.isArray(message) &&
+        ['text', 'markdown', 'id'].some((key) => typeof message[key] === 'string' && message[key].trim());
+      if (!hasMessageText) {
+        throw new Error('malformed SARIF ' + path + ': result is missing message');
+      }
+      if ('ruleId' in result && typeof result.ruleId !== 'string') {
+        throw new Error('malformed SARIF ' + path + ': result ruleId is not a string');
+      }
+      if ('level' in result && !Object.hasOwn(SEVERITY, result.level)) {
+        throw new Error('malformed SARIF ' + path + ': result level is invalid');
+      }
+      if ('locations' in result &&
+          (!Array.isArray(result.locations) ||
+           result.locations.some((location) => !location || typeof location !== 'object' || Array.isArray(location)))) {
+        throw new Error('malformed SARIF ' + path + ': result locations are invalid');
+      }
+    }
+  }
+
   const out = [];
   for (const run of doc.runs || []) {
     const tool = run.tool?.driver?.name || toolHint;
@@ -127,7 +217,8 @@ function fromSarif(path, toolHint) {
         file: file.replace(/^file:\/\//, ''),
         line,
         severity: sev,
-        message: (r.message?.text || '').trim().replace(/\s+/g, ' '),
+        message: (r.message?.text || r.message?.markdown || r.message?.id || '')
+          .trim().replace(/\s+/g, ' '),
         cwe: meta.properties?.cwe || meta.properties?.tags?.find((t) => /^CWE-/i.test(t)) || null,
         class: meta.properties?.class || null,
       });
@@ -144,7 +235,13 @@ if (!existsSync(sarifDir)) {
 }
 
 const statusPath = join(sarifDir, 'scanners.json');
-const scanners = existsSync(statusPath) ? JSON.parse(readFileSync(statusPath, 'utf8')) : [];
+let scanners;
+try {
+  scanners = readScannerMetadata(statusPath, sarifDir);
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 const all = [];
 for (const f of readdirSync(sarifDir).filter((f) => f.endsWith('.sarif'))) {

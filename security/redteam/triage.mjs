@@ -13,7 +13,7 @@
  * Usage:
  *   node security/redteam/triage.mjs --findings <file> [--repo <dir>] [--out <file>]
  *
- * Exit: 0 when nothing blocking survives, 1 when something does, 3 on configuration error.
+ * Exit: 0 when nothing blocking survives, 1 when something does, 3 when triage is incomplete.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -35,16 +35,63 @@ if (!args.findings) {
 const config = JSON.parse(readFileSync(args.config || join(HERE, 'config.json'), 'utf8'));
 const repoRoot = resolve(args.repo || '.');
 const outPath = args.out || 'security-report/triaged.json';
+const runId = process.env.SECURITY_STUDIO_RUN_ID || null;
+const stageSchemaVersion = 1;
 
 const systemPrompt = readFileSync(join(HERE, 'prompts/00-system.md'), 'utf8');
 const triagePrompt = readFileSync(join(HERE, 'prompts/06-triage.md'), 'utf8');
 
-const input = JSON.parse(readFileSync(args.findings, 'utf8'));
-const findings = input.findings || input;
+function writeIncompleteInput(reason) {
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, JSON.stringify({
+    schemaVersion: stageSchemaVersion,
+    stage: 'triage',
+    runId,
+    status: 'incomplete',
+    outcome: 'inconclusive',
+    exit: 3,
+    reasonCodes: ['invalid_input'],
+    reason,
+    triaged: [],
+    dropped: 0,
+    blocking: 0,
+    dismissedButBlocked: 0,
+  }, null, 2));
+  console.error('invalid triage input: ' + reason);
+  process.exit(3);
+}
+
+let input;
+try {
+  input = JSON.parse(readFileSync(args.findings, 'utf8'));
+} catch (err) {
+  writeIncompleteInput('findings JSON is unreadable: ' + err.message);
+}
+
+const findings = Array.isArray(input)
+  ? input
+  : input && typeof input === 'object' && Array.isArray(input.findings)
+    ? input.findings
+    : null;
+const validScannerSeverities = new Set(['critical', 'high', 'medium', 'low', 'error', 'warning', 'note']);
+const malformedIndex = findings?.findIndex((finding) =>
+  !finding || typeof finding !== 'object' || Array.isArray(finding) ||
+  typeof finding.tool !== 'string' || !finding.tool.trim() ||
+  typeof finding.ruleId !== 'string' || !finding.ruleId.trim() ||
+  typeof finding.file !== 'string' ||
+  !Number.isInteger(finding.line) || finding.line < 0 ||
+  !validScannerSeverities.has(finding.severity)
+);
+if (!findings || malformedIndex >= 0) {
+  writeIncompleteInput(!findings
+    ? 'findings must be an array or an object with a findings array'
+    : 'finding row ' + malformedIndex + ' is malformed');
+}
 
 if (!findings.length) {
   console.log('No scanner findings to triage.');
-  writeFileSync(outPath, JSON.stringify({ triaged: [], blocking: 0 }, null, 2));
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, JSON.stringify({ schemaVersion: stageSchemaVersion, stage: 'triage', runId, status: 'complete', outcome: 'pass', exit: 0, reasonCodes: [], triaged: [], dropped: 0, blocking: 0, dismissedButBlocked: 0 }, null, 2));
   process.exit(0);
 }
 
@@ -56,15 +103,28 @@ if (!target) {
   for (const line of listUnavailable(config, [config.triage?.model || config.report.model])) {
     console.log(`  ${line}`);
   }
-  // Passing through must preserve the scanner stage's decision, not escalate it. Without a
-  // triage model the gate is exactly as strict as it was before this stage existed.
+  // Preserve scanner blockers and report the unavailable triage as incomplete.
+  // A nonblocking scanner result cannot certify completion of this requested stage.
   const passthrough = findings.map((f) => ({ ...f, verdict: 'needs_human', reason: 'not triaged' }));
   const blockOn = config.gate.blockOn || ['critical', 'high', 'error'];
   const stillBlocking = passthrough.filter((f) => blockOn.includes(f.severity));
+  const passthroughExit = stillBlocking.length ? 1 : 3;
   mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, JSON.stringify({ triaged: passthrough, blocking: stillBlocking.length }, null, 2));
-  console.log(`${findings.length} findings pass through -> ${stillBlocking.length} blocking (unchanged)`);
-  process.exit(stillBlocking.length ? 1 : 0);
+  writeFileSync(outPath, JSON.stringify({
+    schemaVersion: stageSchemaVersion,
+    stage: 'triage',
+    runId,
+    status: 'incomplete',
+    outcome: stillBlocking.length ? 'block' : 'inconclusive',
+    exit: passthroughExit,
+    reasonCodes: ['provider_unavailable'],
+    triaged: passthrough,
+    dropped: 0,
+    blocking: stillBlocking.length,
+    dismissedButBlocked: 0,
+  }, null, 2));
+  console.log('provider unavailable: ' + findings.length + ' findings pass through -> ' + stillBlocking.length + ' blocking');
+  process.exit(passthroughExit);
 }
 
 /** The flagged line plus enough around it to judge reachability. */
@@ -82,6 +142,8 @@ function codeContext(file, line, radius = 25) {
 }
 
 const BLOCKING_VERDICTS = new Set(['true_positive', 'needs_human']);
+const VALID_VERDICTS = new Set(['true_positive', 'false_positive', 'needs_human']);
+const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
 
 const UNTRUSTED_BEGIN = '<<<UNTRUSTED_INPUT_BEGIN>>>';
 const UNTRUSTED_END = '<<<UNTRUSTED_INPUT_END>>>';
@@ -103,20 +165,32 @@ async function triage(finding) {
   try {
     const out = await complete(config, target, systemPrompt, user);
     const parsed = parseJson(out);
-    if (!parsed || !parsed.verdict) {
+    const validResponse =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+      VALID_VERDICTS.has(parsed.verdict) &&
+      VALID_SEVERITIES.has(parsed.severity) &&
+      typeof parsed.reason === 'string' && parsed.reason.trim().length > 0 &&
+      (parsed.reachable_from === null || typeof parsed.reachable_from === 'string') &&
+      typeof parsed.what_would_change_my_mind === 'string' &&
+      parsed.what_would_change_my_mind.trim().length > 0;
+    if (!validResponse) {
       return {
         ...finding,
         verdict: 'needs_human',
-        reason: 'unparseable triage response',
+        severity: finding.severity,
+        reason: 'invalid triage response',
         scannerSeverity: finding.severity,
+        triageInvalid: true,
       };
     }
-    // Model severity is a priority hint; the gate must never be weaker than the scanner.
     return {
       ...finding,
-      ...parsed,
+      verdict: parsed.verdict,
+      severity: parsed.severity,
+      reason: parsed.reason,
+      reachable_from: parsed.reachable_from,
+      what_would_change_my_mind: parsed.what_would_change_my_mind,
       scannerSeverity: finding.severity,
-      severity: parsed.severity || finding.severity,
     };
   } catch (err) {
     // An error must never look like a dismissal.
@@ -125,6 +199,7 @@ async function triage(finding) {
       verdict: 'needs_human',
       reason: `triage error: ${err.message}`,
       scannerSeverity: finding.severity,
+      triageInvalid: true,
     };
   }
 }
@@ -141,6 +216,7 @@ function parseJson(text) {
 }
 
 const triaged = await Promise.all(findings.map(triage));
+const invalidModelOutput = triaged.filter((f) => f.triageInvalid).length;
 
 const blockOn = config.gate.blockOn || ['critical', 'high', 'error'];
 const dropped = triaged.filter((f) => f.verdict === 'false_positive');
@@ -196,6 +272,13 @@ writeFileSync(
       dropped: dropped.length,
       blocking: blocking.length,
       dismissedButBlocked: dismissedButBlocked.length,
+      schemaVersion: stageSchemaVersion,
+      stage: 'triage',
+      runId,
+      status: invalidModelOutput ? 'incomplete' : 'complete',
+      outcome: invalidModelOutput ? 'inconclusive' : (blocking.length ? 'block' : 'pass'),
+      exit: invalidModelOutput ? 3 : (blocking.length ? 1 : 0),
+      reasonCodes: invalidModelOutput ? ['invalid_model_output'] : [],
     },
     null,
     2
@@ -220,4 +303,5 @@ if (blocking.length) {
   for (const f of blocking) console.log(`  [${f.severity}] ${f.file}:${f.line} ${f.ruleId} (${f.verdict})`);
 }
 
-process.exit(blocking.length ? 1 : 0);
+const artifactExit = invalidModelOutput ? 3 : (blocking.length ? 1 : 0);
+process.exit(artifactExit);
