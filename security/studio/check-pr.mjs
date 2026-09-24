@@ -45,6 +45,7 @@ import {
 import { resolveDockerBin } from '../lab/sandbox.mjs';
 import { resolveLabModelSpec } from './lab-model.mjs';
 import { getUsageLog, resetUsageLog } from '../redteam/providers.mjs';
+import { randomUUID } from 'node:crypto';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../..');
@@ -56,6 +57,35 @@ const HARNESS = join(REPO_ROOT, 'security/redteam/harness.mjs');
 const LAB = join(REPO_ROOT, 'security/lab/run.mjs');
 const CONFIG = join(REPO_ROOT, 'security/redteam/config.json');
 const MARKER = '<!-- security-scan-studio -->';
+const STAGE_STATUS_SCHEMA = 1;
+const TRIAGE_VERDICTS = new Set(['true_positive', 'false_positive', 'needs_human']);
+const TRIAGE_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'error', 'warning', 'note']);
+const SECURITY_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
+const SARIF_LEVELS = new Set(['error', 'warning', 'note', 'none']);
+const SARIF_SEVERITY = { error: 'error', warning: 'warning', note: 'note', none: 'note' };
+
+function securityLevelForScore(score) {
+  if (score === null || score === 0) return null;
+  if (score >= 9) return 'critical';
+  if (score >= 7) return 'high';
+  if (score >= 4) return 'medium';
+  return 'low';
+}
+
+function findingAuthorities(finding) {
+  const authorities = new Set();
+  if (finding?.sarifLevel && Object.hasOwn(SARIF_SEVERITY, finding.sarifLevel)) {
+    authorities.add(SARIF_SEVERITY[finding.sarifLevel]);
+  }
+  if (finding?.securitySeverity) authorities.add(finding.securitySeverity);
+  if (finding?.scannerSeverity) authorities.add(finding.scannerSeverity);
+  if (finding?.severity) authorities.add(finding.severity);
+  return authorities;
+}
+
+function blocksByPolicy(finding, blockOn) {
+  return [...findingAuthorities(finding)].some((authority) => blockOn.has(authority));
+}
 
 // ---------------------------------------------------------------- args
 
@@ -64,7 +94,11 @@ function parseArgs(argv) {
   const multi = new Set(['host-allow-extra']);
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
-    if (!a.startsWith('--')) throw new Error(`unexpected argument: ${a}`);
+    if (!a.startsWith('--')) {
+      const error = new Error('unexpected argument: ' + a);
+      error.parsedArgs = args;
+      throw error;
+    }
     const key = a.slice(2);
     const bools = new Set([
       'local', 'post', 'skip-ai', 'no-lab', 'skip-scanners', 'skip-static',
@@ -89,6 +123,8 @@ function parseArgs(argv) {
   }
   return args;
 }
+
+let runContext = null;
 
 function usage(msg) {
   if (msg) console.error(msg);
@@ -121,18 +157,58 @@ Options:
   --skip-ai / --no-lab / --skip-scanners / --skip-static
   --post                Upsert PR comment (pr mode only)
   --keep-workdir        Keep cache worktrees/clones`);
+  if (msg && runContext) {
+    writeFailureArtifacts(runContext.outDir, runContext.runId, 'usage: ' + msg);
+  }
   process.exit(3);
 }
 
+const rawArgv = process.argv.slice(2);
 let args;
 try {
-  args = parseArgs(process.argv.slice(2));
+  args = parseArgs(rawArgv);
 } catch (err) {
+  args = err.parsedArgs || {};
+  if (!args.help && !args['list-targets'] && args.out && args.out !== true) {
+    initializeRunContext(args.out);
+  }
   usage(err.message);
 }
 if (args.help) usage();
 
-const registry = loadTargetsRegistry();
+const valueOptions = new Set([
+  'pr', 'out', 'mode', 'target', 'repo', 'dir', 'repo-dir', 'base',
+  'host-allow-extra', 'lab-model', 'max-lab', 'lab-timeout-s', 'lab-max-turns',
+]);
+const missingValue = [...valueOptions].find((key) => args[key] === true);
+if (missingValue === 'out') usage('missing value for --out');
+
+function initializeRunContext(outArg) {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const outDir = resolve(outArg || join(process.cwd(), 'security-report', 'studio-' + ts));
+  runContext = {
+    outDir,
+    runId: ts + '-' + process.pid + '-' + randomUUID(),
+  };
+  mkdirSync(outDir, { recursive: true });
+  for (const artifact of ['gate.json', 'report.md']) {
+    rmSync(join(outDir, artifact), { force: true });
+  }
+  resetUsageLog();
+}
+
+if (!args['list-targets']) initializeRunContext(args.out);
+if (missingValue) usage('missing value for --' + missingValue);
+
+let registry;
+try {
+  registry = loadTargetsRegistry();
+} catch (err) {
+  const reason = 'setup: ' + err.message;
+  if (runContext) writeFailureArtifacts(runContext.outDir, runContext.runId, reason);
+  console.error(reason);
+  process.exit(3);
+}
 if (args['list-targets']) {
   for (const r of listTargets(registry)) {
     const mark = r.primary ? '*' : ' ';
@@ -153,6 +229,10 @@ function resolveRunMode(a) {
   if (a.pr) return 'pr';
   if (a.local || a['repo-dir'] || a.dir) return 'local';
   return null;
+}
+
+if (args.mode !== undefined && !['pr', 'local', 'tree'].includes(args.mode)) {
+  usage('invalid --mode ' + args.mode + '. Use pr, local, or tree.');
 }
 
 const runMode = resolveRunMode(args);
@@ -215,17 +295,96 @@ function log(section, msg) {
   console.log(`\n\x1b[1m> ${section}\x1b[0m  ${msg || ''}`.trimEnd());
 }
 
-function readJson(path, fallback = null) {
-  if (!existsSync(path)) return fallback;
+function readJsonStrict(path) {
+  if (!existsSync(path)) return { ok: false, reason: 'missing_output' };
   try {
-    return JSON.parse(readFileSync(path, 'utf8'));
+    return { ok: true, value: JSON.parse(readFileSync(path, 'utf8')) };
   } catch {
-    return fallback;
+    return { ok: false, reason: 'malformed_output' };
   }
 }
 
-function stageEnv(base = process.env) {
+function health(status, reasonCodes = []) {
+  return { schemaVersion: STAGE_STATUS_SCHEMA, status, reasonCodes };
+}
+
+function skippedStage(name, reason = 'explicit_skip') {
+  return {
+    name,
+    exit: 0,
+    signal: null,
+    blocked: false,
+    skipped: true,
+    health: health('skipped', [reason]),
+  };
+}
+
+function writeFailureArtifacts(outDir, runId, message) {
+  const reason = String(message || 'pipeline failure').slice(0, 2000);
+  const gate = {
+    runId,
+    blocked: true,
+    inconclusiveBlock: true,
+    reasons: [reason],
+    harnessBlocking: [],
+  };
+  writeFileSync(join(outDir, 'gate.json'), JSON.stringify(gate, null, 2));
+  writeFileSync(join(outDir, 'report.md'), [
+    '## Security Scan (Studio)',
+    '',
+    '> **Result: BLOCK**  - pipeline did not produce a complete scan.',
+    '',
+    '### Gate reasons',
+    '',
+    '- ' + reason,
+    '',
+  ].join('\n'));
+}
+
+function validateExecutionArtifact(path, { stage, runId, exit }) {
+  const parsed = readJsonStrict(path);
+  if (!parsed.ok) return { ok: false, reason: parsed.reason };
+  const value = parsed.value;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, reason: 'malformed_output' };
+  }
+  if (value.schemaVersion !== STAGE_STATUS_SCHEMA || value.stage !== stage) {
+    return { ok: false, reason: 'invalid_schema' };
+  }
+  if (runId && value.runId !== runId) return { ok: false, reason: 'stale_output' };
+  if (!['complete', 'incomplete', 'failed'].includes(value.status)) {
+    return { ok: false, reason: 'invalid_status' };
+  }
+  if (!Number.isInteger(value.exit) || value.exit !== exit) {
+    return { ok: false, reason: 'exit_mismatch' };
+  }
+  if (!Array.isArray(value.reasonCodes) || value.reasonCodes.some((x) => typeof x !== 'string')) {
+    return { ok: false, reason: 'invalid_reason_codes' };
+  }
+  if (!['pass', 'block', 'inconclusive'].includes(value.outcome)) {
+    return { ok: false, reason: 'invalid_outcome' };
+  }
+  const expectedExit = { pass: 0, block: 1, inconclusive: 3 };
+  if (value.exit !== expectedExit[value.outcome]) {
+    return { ok: false, reason: 'outcome_exit_mismatch' };
+  }
+  const validStatusOutcome =
+    (value.status === 'complete' && ['pass', 'block'].includes(value.outcome)) ||
+    (value.status === 'incomplete' && ['block', 'inconclusive'].includes(value.outcome)) ||
+    (value.status === 'failed' && value.outcome === 'block');
+  if (!validStatusOutcome) {
+    return { ok: false, reason: 'status_outcome_mismatch' };
+  }
+  return { ok: true, value };
+}
+
+function healthFromExecution(execution) {
+  return health(execution.status, execution.reasonCodes);
+}
+
+function stageEnv(base = process.env, runId = null) {
   const env = { ...base };
+  if (runId) env.SECURITY_STUDIO_RUN_ID = runId;
   if (hostExtra) env.SECURITY_HOST_ALLOW_EXTRA = hostExtra;
   // Lab / docker resolution on Studio non-interactive shells (OrbStack + brew + go).
   // Prepend security/studio so `claude-via-gui` is found when linked only in-repo.
@@ -498,7 +657,11 @@ function buildDiff(subject, outDir) {
   } else {
     diff = run('git', ['-C', subject.workdir, 'diff', `${subject.base}...HEAD`]);
   }
-  writeFileSync(diffPath, diff.stdout || '');
+  if (diff.status !== 0) {
+    const detail = (diff.stderr || diff.stdout || diff.error || '').trim().slice(0, 500);
+    throw new Error('git diff failed (exit ' + diff.status + ')' + (detail ? ': ' + detail : ''));
+  }
+  writeFileSync(diffPath, diff.stdout);
   return diffPath;
 }
 
@@ -522,12 +685,16 @@ function stageStatic(subject, outDir) {
   } else {
     console.log('  clean');
   }
-  return { name: 'static', exit: r.status, signal: r.signal || null, blocked: r.status !== 0 };
+  return {
+    name: 'static', exit: r.status, signal: r.signal || null, blocked: r.status !== 0,
+    health: health(r.status === 0 ? 'complete' : 'failed', r.status === 0 ? [] : ['stage_failed']),
+  };
 }
 
 function stageScanners(subject, outDir) {
   log('scanners', subject.mode === 'tree' ? '(full tree)' : '');
   const sarifDir = join(outDir, 'sarif');
+  if (existsSync(sarifDir)) rmSync(sarifDir, { recursive: true, force: true });
   mkdirSync(sarifDir, { recursive: true });
   const r = run('bash', [SCANNERS, subject.workdir, sarifDir], {
     cwd: subject.workdir,
@@ -540,76 +707,222 @@ function stageScanners(subject, outDir) {
   const diffPath = buildDiff(subject, outDir);
 
   const findingsPath = join(outDir, 'findings.json');
+  const scannerConfig = JSON.parse(readFileSync(CONFIG, 'utf8'));
+  const blockOn = Array.isArray(scannerConfig.gate?.blockOn)
+    ? scannerConfig.gate.blockOn.join(',')
+    : 'critical,high,error';
   // Tree mode: still pass the synthetic full diff so normalize scopes to tracked files.
+  // The standalone normalizer defaults to raw SARIF error; Studio supplies its configured
+  // policy explicitly so the artifact and final gate use the same authorities.
   const n = run('node', [
     NORMALIZE,
     '--sarif', sarifDir,
     '--diff', diffPath,
     '--out', findingsPath,
+    '--block-on', blockOn,
     '--no-gate',
   ], { cwd: subject.workdir, env: stageEnv() });
   writeFileSync(join(outDir, 'normalize.log'), `${n.stdout}\n${n.stderr}`);
   if (n.status !== 0 && n.status !== 1) {
     console.error(n.stderr || n.stdout);
   }
-  const findings = readJson(findingsPath, { findings: [] });
-  const list = findings.findings || findings || [];
-  console.log(`  ${list.length} finding(s) in scope`);
+  const parsed = readJsonStrict(findingsPath);
+  const findings = parsed.ok ? parsed.value : null;
+  const list = findings && !Array.isArray(findings) && Array.isArray(findings.findings)
+    ? findings.findings : null;
+  const rawMetadata = readJsonStrict(join(sarifDir, 'scanners.json'));
+  const rawScannerStatus = rawMetadata.ok && Array.isArray(rawMetadata.value)
+    ? rawMetadata.value : null;
+  const scannerStatus = findings && !Array.isArray(findings) && Array.isArray(findings.scanners)
+    ? findings.scanners : rawScannerStatus;
+  const incompleteSkips = (scannerStatus || []).filter(
+    (scanner) => scanner.status === 'skipped' && scanner.reasonCode !== 'not_applicable_no_lockfile',
+  );
+  const reasons = [];
+  if (r.status !== 0) reasons.push('scanner_stage_failed');
+  if (n.status !== 0 && incompleteSkips.length === 0) reasons.push('normalization_failed');
+  if ((!parsed.ok || !Array.isArray(list) || !Array.isArray(scannerStatus)) && incompleteSkips.length === 0) {
+    reasons.push(parsed.ok ? 'malformed_output' : parsed.reason);
+  }
+  if (incompleteSkips.length) reasons.push('scanner_metadata_incomplete');
+  const degraded = (scannerStatus || []).filter((scanner) => scanner.status === 'degraded');
+  if (degraded.length) reasons.push('scanner_degraded');
+  const incomplete = new Set(['scanner_degraded', 'scanner_metadata_incomplete']);
+  const fatal = reasons.filter((reason) => !incomplete.has(reason));
+  const stageHealth = health(
+    fatal.length ? 'failed' : reasons.length ? 'incomplete' : 'complete',
+    reasons,
+  );
+  console.log(`  ${(list || []).length} finding(s) in scope`);
   return {
     name: 'scanners',
     exit: n.status,
     signal: n.signal || r.signal || null,
-    findings: list,
+    findings: list || [],
     findingsPath,
     diffPath,
-    blocked: false,
+    blocked: reasons.length > 0,
+    health: stageHealth,
   };
 }
 
-function stageTriage(subject, outDir, findingsPath) {
+function findingKey(f) {
+  const capped = (value, limit) => String(value ?? '').slice(0, limit);
+  return JSON.stringify([
+    capped(f?.tool, 64),
+    capped(f?.ruleId, 256),
+    capped(f?.file, 1024),
+    Number.isFinite(Number(f?.line)) ? Number(f.line) : 0,
+    capped(f?.sarifLevel, 32),
+    capped(f?.securitySeverity, 32),
+    f?.securitySeverityScore == null ? null : Number(f.securitySeverityScore),
+    capped(f?.securitySeveritySource, 128),
+  ]);
+}
+
+function validTriageRow(f) {
+  const hasScore = f?.securitySeverityScore !== undefined && f?.securitySeverityScore !== null;
+  const scoreValid = !hasScore ||
+    (typeof f.securitySeverityScore === 'number' && Number.isFinite(f.securitySeverityScore) &&
+      f.securitySeverityScore >= 0 && f.securitySeverityScore <= 10);
+  const securityLevelValid = f?.securitySeverity === undefined || f?.securitySeverity === null ||
+    SECURITY_SEVERITIES.has(f?.securitySeverity);
+  const sarifLevelValid = f?.sarifLevel === undefined || f?.sarifLevel === null ||
+    SARIF_LEVELS.has(f?.sarifLevel);
+  const sourceValid = f?.securitySeveritySource === undefined || f?.securitySeveritySource === null ||
+    (typeof f?.securitySeveritySource === 'string' && f.securitySeveritySource.trim().length > 0);
+  const scoreSourceValid = !hasScore ||
+    (typeof f?.securitySeveritySource === 'string' && f.securitySeveritySource.trim().length > 0);
+  const authorityPairValid = !hasScore ||
+    (scoreSourceValid && securityLevelForScore(f.securitySeverityScore) === f.securitySeverity);
+  const sourcePairValid = hasScore || f?.securitySeveritySource === undefined || f.securitySeveritySource === null;
+  const absentScoreValid = hasScore || f?.securitySeverity === undefined || f.securitySeverity === null;
+  return Boolean(
+    f && typeof f === 'object' && !Array.isArray(f) &&
+    typeof f.tool === 'string' &&
+    typeof f.ruleId === 'string' &&
+    typeof f.file === 'string' &&
+    Number.isInteger(f.line) && f.line >= 0 &&
+    TRIAGE_VERDICTS.has(f.verdict) &&
+    TRIAGE_SEVERITIES.has(f.severity) &&
+    TRIAGE_SEVERITIES.has(f.scannerSeverity) &&
+    typeof f.reason === 'string' && f.reason.length > 0 &&
+    scoreValid && securityLevelValid && sarifLevelValid && sourceValid &&
+    authorityPairValid && sourcePairValid && absentScoreValid
+  );
+}
+
+function stageTriage(subject, outDir, findingsPath, runId) {
   log('triage', '');
   const out = join(outDir, 'triaged.json');
+  rmSync(out, { force: true });
   const r = run('node', [TRIAGE, '--findings', findingsPath, '--repo', subject.workdir, '--out', out], {
     cwd: subject.workdir,
-    env: { ...stageEnv(), SECURITY_USAGE_LOG_FILE: usageLogFile(outDir) },
+    env: { ...stageEnv(process.env, runId), SECURITY_USAGE_LOG_FILE: usageLogFile(outDir) },
     timeoutMs: 600_000,
   });
   writeFileSync(join(outDir, 'triage.log'), `${r.stdout}\n${r.stderr}`);
   console.log(r.stdout.trim().split('\n').slice(-15).join('\n'));
-  const data = readJson(out, { triaged: [], blocking: 0 });
-  const still = (data.triaged || []).filter(
+  const execution = validateExecutionArtifact(out, { stage: 'triage', runId, exit: r.status });
+  const parsed = readJsonStrict(out);
+  const data = parsed.ok ? parsed.value : null;
+  const triaged = data && !Array.isArray(data) && Array.isArray(data.triaged) ? data.triaged : null;
+  const sourceParsed = readJsonStrict(findingsPath);
+  const sourceFindings = sourceParsed.ok && sourceParsed.value && !Array.isArray(sourceParsed.value)
+    ? sourceParsed.value.findings
+    : sourceParsed.ok ? sourceParsed.value : null;
+  const still = (triaged || []).filter(
     (f) => f.verdict === 'true_positive' || f.verdict === 'needs_human'
   );
+  const rowsValid = Array.isArray(triaged) && triaged.every(validTriageRow);
+  const hasBlockingArtifact = Number.isInteger(data?.blocking) && data.blocking > 0;
+  const expectedBlockingExit = r.status === 1 && hasBlockingArtifact;
+  const artifactReasons = Array.isArray(data?.reasonCodes)
+    ? data.reasonCodes.filter((reason) => typeof reason === 'string')
+    : [];
+  const artifactIncomplete = data?.status === 'incomplete' || artifactReasons.length > 0;
+  const reasons = execution.ok ? [...artifactReasons] : [execution.reason, ...artifactReasons];
+  if (r.status !== 0 && !expectedBlockingExit && !artifactIncomplete) {
+    reasons.push('triage_stage_failed');
+  }
+  if (!parsed.ok || !Array.isArray(triaged)) reasons.push(parsed.ok ? 'malformed_output' : parsed.reason);
+  if (!rowsValid) reasons.push('triage_row_invalid');
+  if (!Array.isArray(sourceFindings) || !Array.isArray(triaged) || sourceFindings.length !== triaged.length) {
+    reasons.push('triage_coverage_mismatch');
+  } else {
+    const expected = new Map();
+    for (const finding of sourceFindings) expected.set(findingKey(finding), (expected.get(findingKey(finding)) || 0) + 1);
+    for (const finding of triaged) expected.set(findingKey(finding), (expected.get(findingKey(finding)) || 0) - 1);
+    if ([...expected.values()].some((count) => count !== 0)) reasons.push('triage_coverage_mismatch');
+  }
+  if (execution.ok) {
+    const declaredBlock = execution.value.outcome === 'block';
+    const outcomeFindingsMismatch =
+      (declaredBlock && !hasBlockingArtifact) ||
+      (!declaredBlock && hasBlockingArtifact && execution.value.status === 'complete');
+    if (outcomeFindingsMismatch) reasons.push('triage_outcome_findings_mismatch');
+  }
+  const uniqueReasons = [...new Set(reasons)];
   return {
     name: 'triage',
     exit: r.status,
     signal: r.signal || null,
-    triaged: data.triaged || [],
+    triaged: triaged || [],
     survivors: still,
-    blocked: r.status === 1,
+    blocked: r.status === 1 || uniqueReasons.length > 0,
     out,
+    health: health(
+      uniqueReasons.length ? 'incomplete' : execution.ok ? execution.value.status : 'incomplete',
+      uniqueReasons,
+    ),
   };
 }
 
-function stageHarness(subject, outDir, diffPath) {
+function stageHarness(subject, outDir, diffPath, runId) {
   log('harness', 'hunt -> verify -> report');
   const harnessOut = join(outDir, 'harness');
+  if (existsSync(harnessOut)) rmSync(harnessOut, { recursive: true, force: true });
   mkdirSync(harnessOut, { recursive: true });
   const r = run('node', [HARNESS, '--diff', diffPath, '--out', harnessOut, '--config', CONFIG], {
     cwd: subject.workdir,
-    env: { ...stageEnv(), SECURITY_USAGE_LOG_FILE: usageLogFile(outDir) },
+    env: { ...stageEnv(process.env, runId), SECURITY_USAGE_LOG_FILE: usageLogFile(outDir) },
     timeoutMs: 900_000,
   });
   writeFileSync(join(outDir, 'harness.log'), `${r.stdout}\n${r.stderr}`);
   console.log(r.stdout.trim().split('\n').slice(-25).join('\n'));
-  const findings = readJson(join(harnessOut, 'findings.json'), []) || [];
+  const execution = validateExecutionArtifact(join(harnessOut, 'execution.json'), {
+    stage: 'harness', runId, exit: r.status,
+  });
+  const findingsFile = readJsonStrict(join(harnessOut, 'findings.json'));
+  const findings = findingsFile.ok && Array.isArray(findingsFile.value) ? findingsFile.value : [];
   const report = existsSync(join(harnessOut, 'report.md'))
     ? readFileSync(join(harnessOut, 'report.md'), 'utf8')
     : '';
   const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
   const blockOn = new Set(config.gate?.blockOn || ['critical', 'high', 'error']);
+  const findingsValid = findingsFile.ok && Array.isArray(findingsFile.value);
   const survivors = findings.filter((f) => f.survived);
   const blocking = survivors.filter((f) => blockOn.has(f.severity));
+  let artifactHealth = execution.ok
+    ? healthFromExecution(execution.value)
+    : health('incomplete', [execution.reason]);
+  if (!findingsValid) {
+    artifactHealth.status = 'incomplete';
+    artifactHealth.reasonCodes = [...artifactHealth.reasonCodes, findingsFile.reason || 'malformed_findings'];
+  }
+  if (execution.ok) {
+    const declaredBlock = execution.value.outcome === 'block';
+    const diffBlock = execution.value.status === 'failed' && execution.value.reasonCodes.includes('diff_too_large');
+    const outcomeFindingsMismatch =
+      (declaredBlock && blocking.length === 0 && !diffBlock) ||
+      (!declaredBlock && blocking.length > 0);
+    if (outcomeFindingsMismatch) {
+      artifactHealth = health('incomplete', [
+        ...artifactHealth.reasonCodes,
+        'outcome_findings_mismatch',
+      ]);
+    }
+  }
   return {
     name: 'harness',
     exit: r.status,
@@ -620,17 +933,19 @@ function stageHarness(subject, outDir, diffPath) {
     report,
     harnessOut,
     blockOn: [...blockOn],
-    blocked: r.status === 1,
+    blocked: r.status === 1 || artifactHealth.status !== 'complete',
+    health: artifactHealth,
   };
 }
 
-function stageLab(subject, outDir, candidates, diffPath, config) {
+function stageLab(subject, outDir, candidates, diffPath, config, runId) {
   if (!candidates.length) {
     log('lab', '0 candidate(s) -> Ollama sandbox');
-    return { name: 'lab', exit: 0, results: [], blocked: false, model: null };
+    return { ...skippedStage('lab', 'no_candidates'), results: [], model: null };
   }
 
   const labRoot = join(outDir, 'lab');
+  if (existsSync(labRoot)) rmSync(labRoot, { recursive: true, force: true });
   mkdirSync(labRoot, { recursive: true });
   const labCfg = config?.lab || {};
   const model = resolveLabModelSpec(config, args['lab-model'] || null);
@@ -652,7 +967,8 @@ function stageLab(subject, outDir, candidates, diffPath, config) {
 
   for (let i = 0; i < slice.length; i += 1) {
     const f = slice[i];
-    const id = slug(f.title || f.file || `finding-${i}`);
+    // The ordinal keeps distinct candidates isolated even when their titles slug alike.
+    const id = `${String(i + 1).padStart(2, '0')}-${slug(f.title || f.file || `finding-${i}`)}`;
     const findingFile = join(labRoot, `${id}.finding.json`);
     const runOut = join(labRoot, id);
     writeFileSync(findingFile, JSON.stringify(f, null, 2));
@@ -675,11 +991,12 @@ function stageLab(subject, outDir, candidates, diffPath, config) {
 
     const r = run('node', labArgs, {
       cwd: subject.workdir,
-      env: { ...stageEnv(), SECURITY_USAGE_LOG_FILE: usageLogFile(outDir) },
+      env: { ...stageEnv(process.env, runId), SECURITY_USAGE_LOG_FILE: usageLogFile(outDir) },
       timeoutMs: Math.max(400_000, (timeoutS + 60) * 1000),
     });
     writeFileSync(join(runOut, 'lab-runner.log'), `${r.stdout}\n${r.stderr}`);
-    const report = readJson(join(runOut, 'report.json'), null);
+    const reportFile = readJsonStrict(join(runOut, 'report.json'));
+    const report = reportFile.ok ? reportFile.value : null;
     const verdict = report?.verdict || (r.status === 3 ? 'setup-error' : 'inconclusive');
     console.log(`    -> ${verdict} (exit ${r.status})`);
     results.push({ finding: f, verdict, report, exit: r.status, signal: r.signal || null, out: runOut, model });
@@ -687,6 +1004,17 @@ function stageLab(subject, outDir, candidates, diffPath, config) {
 
   const reproduced = results.filter((r) => r.verdict === 'reproduced');
   const inconclusive = results.filter((r) => r.verdict === 'inconclusive' || r.verdict === 'setup-error');
+  const invalid = results.some((r) => !r.report || !['reproduced', 'not-reproduced', 'inconclusive', 'setup-error'].includes(r.verdict));
+  const invalidExit = results.some((r) => {
+    // security/lab/run.mjs uses exit 0 for both conclusive verdicts. The
+    // aggregate lab stage reports exit 1 when a finding was reproduced.
+    if (r.verdict === 'reproduced') return r.exit !== 0;
+    if (r.verdict === 'not-reproduced') return r.exit !== 0;
+    if (r.verdict === 'inconclusive') return r.exit !== 2;
+    if (r.verdict === 'setup-error') return r.exit !== 3;
+    return true;
+  });
+  const incomplete = invalid || invalidExit || inconclusive.length > 0;
   return {
     name: 'lab',
     exit: reproduced.length ? 1 : 0,
@@ -694,8 +1022,9 @@ function stageLab(subject, outDir, candidates, diffPath, config) {
     results,
     reproduced,
     inconclusive,
-    blocked: reproduced.length > 0,
+    blocked: reproduced.length > 0 || incomplete,
     model,
+    health: health(incomplete ? 'incomplete' : 'complete', incomplete ? ['lab_execution_incomplete'] : []),
   };
 }
 
@@ -744,37 +1073,55 @@ function slug(s) {
 
 // ---------------------------------------------------------------- final gate + report
 
-function finalGate({ staticResult, triageResult, harnessResult, labResult, config }) {
+function finalGate({ staticResult, scannersResult, triageResult, harnessResult, labResult, config }) {
   const blockOn = new Set(config.gate?.blockOn || ['critical', 'high', 'error']);
   const reasons = [];
   let blocked = false;
   let inconclusiveBlock = false;
+
+  for (const stage of [staticResult, scannersResult, triageResult, harnessResult, labResult]) {
+    if (!stage?.health || stage.health.status === 'complete' || stage.health.status === 'skipped') continue;
+    blocked = true;
+    if (stage.health.status === 'incomplete') inconclusiveBlock = true;
+    const detail = stage.health.reasonCodes?.length ? `: ${stage.health.reasonCodes.join(', ')}` : '';
+    reasons.push(`${stage.name} execution ${stage.health.status}${detail}`);
+  }
 
   if (staticResult?.blocked) {
     blocked = true;
     reasons.push('static gate blocked');
   }
 
+  // Deterministic scanner findings remain blocking regardless of triage output. The triage
+  // stage preserves scannerSeverity, but this second gate also fails closed if that artifact
+  // is malformed or a provider incorrectly claims a blocking finding is a false positive.
+  for (const f of scannersResult?.findings || []) {
+    if (!blocksByPolicy(f, blockOn)) continue;
+    blocked = true;
+    reasons.push('scanner ' + f.severity + ': ' + (f.ruleId || f.title || f.file));
+  }
+
   if (triageResult?.survivors) {
-    const bad = triageResult.survivors.filter((f) => blockOn.has(f.severity) && f.verdict === 'true_positive');
+    const bad = triageResult.survivors.filter((f) => blocksByPolicy(f, blockOn) && f.verdict === 'true_positive');
     for (const f of bad) {
       blocked = true;
       reasons.push(`scanner true_positive: ${f.ruleId || f.title || f.file}`);
     }
   }
 
-  const labByKey = new Map();
+  // stageLab retains the original candidate object. Only that identity may receive its
+  // verdict; file/line/title aliases can describe distinct root causes.
+  const labByFinding = new Map();
   for (const r of labResult?.results || []) {
-    const k = `${r.finding.file || ''}:${r.finding.line || ''}:${r.finding.title || ''}`;
-    labByKey.set(k, r);
+    labByFinding.set(r.finding, r);
   }
 
   const harnessBlocking = [];
   for (const f of harnessResult?.survivors || []) {
-    if (!blockOn.has(f.severity) && !(labByKey.size && labVerdict(f, labByKey) === 'reproduced')) {
+    if (!blockOn.has(f.severity) && !(labByFinding.size && labVerdict(f, labByFinding) === 'reproduced')) {
       continue;
     }
-    const lv = labVerdict(f, labByKey);
+    const lv = labVerdict(f, labByFinding);
     if (lv === 'not-reproduced') {
       reasons.push(`lab cleared: ${f.title || f.file}`);
       continue;
@@ -804,13 +1151,8 @@ function finalGate({ staticResult, triageResult, harnessResult, labResult, confi
   return { blocked, inconclusiveBlock, reasons, harnessBlocking };
 }
 
-function labVerdict(finding, labByKey) {
-  const k = `${finding.file || ''}:${finding.line || ''}:${finding.title || ''}`;
-  if (labByKey.has(k)) return labByKey.get(k).verdict;
-  for (const [key, r] of labByKey) {
-    if (key.startsWith(`${finding.file || ''}:${finding.line || ''}:`)) return r.verdict;
-  }
-  return null;
+function labVerdict(finding, labByFinding) {
+  return labByFinding.get(finding)?.verdict || null;
 }
 
 function usageLogFile(outDir) {
@@ -952,8 +1294,7 @@ function buildReport(subject, stages, gate, usage) {
     '',
     gate.blocked
       ? `> **Result: BLOCK** — ${gate.reasons.length} reason(s).`
-      : '> **Result: PASS** — no blocking findings after verification' +
-        (stages.lab?.results?.length ? ' and local lab evidence' : '') + '.',
+      : '> **Result: PASS** — configured gate passed; see executed and skipped stages below.',
     '',
     '### Pipeline',
     '',
@@ -1016,6 +1357,10 @@ function buildReport(subject, stages, gate, usage) {
 
 function row(name, stage, note = '') {
   if (!stage) return `| ${name} | — | ${note || 'skipped'} |`;
+  if (stage.skipped || stage.health?.status === 'skipped') {
+    const reason = stage.health?.reasonCodes?.[0] || note || 'skipped';
+    return `| ${name} | — | skipped (${reason}) |`;
+  }
   const mark = stage.blocked ? 'FAIL' : stage.exit === 0 ? 'ok' : 'warn';
   const exit = `${mark} ${stage.exit}${stage.signal ? ` (signal: ${stage.signal})` : ''}`;
   return `| ${name} | ${exit} | ${note} |`;
@@ -1083,10 +1428,7 @@ function cleanupSubject(subject) {
 // ---------------------------------------------------------------- main
 
 async function main() {
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const outDir = resolve(args.out || join(process.cwd(), 'security-report', `studio-${ts}`));
-  mkdirSync(outDir, { recursive: true });
-  resetUsageLog();
+  const { outDir, runId } = runContext;
 
   console.log(`\x1b[1msecurity-scan · Studio check\x1b[0m`);
   console.log(`target: ${target.id} (${target.label || ''})`);
@@ -1098,7 +1440,9 @@ async function main() {
   try {
     subject = resolveSubject();
   } catch (err) {
-    console.error(`setup: ${err.message}`);
+    const reason = 'setup: ' + err.message;
+    writeFailureArtifacts(outDir, runId, reason);
+    console.error(reason);
     return 3;
   }
 
@@ -1122,13 +1466,15 @@ async function main() {
   try {
     if (!args['skip-static']) {
       stages.static = stageStatic(subject, outDir);
+    } else {
+      stages.static = skippedStage('static');
     }
     if (!args['skip-scanners']) {
       stages.scanners = stageScanners(subject, outDir);
     } else {
       const diffPath = buildDiff(subject, outDir);
       stages.scanners = {
-        name: 'scanners', exit: 0, findings: [], findingsPath: null, diffPath, blocked: false,
+        ...skippedStage('scanners'), findings: [], findingsPath: null, diffPath,
       };
     }
 
@@ -1136,12 +1482,14 @@ async function main() {
 
     if (!args['skip-ai']) {
       if (stages.scanners.findingsPath && stages.scanners.findings?.length) {
-        stages.triage = stageTriage(subject, outDir, stages.scanners.findingsPath);
+        stages.triage = stageTriage(subject, outDir, stages.scanners.findingsPath, runId);
       } else {
-        stages.triage = { name: 'triage', exit: 0, triaged: [], survivors: [], blocked: false };
+        stages.triage = skippedStage('triage', 'no_findings');
+        stages.triage.triaged = [];
+        stages.triage.survivors = [];
         console.log('\n> triage  (no scanner findings — skipped)');
       }
-      stages.harness = stageHarness(subject, outDir, diffPath);
+      stages.harness = stageHarness(subject, outDir, diffPath, runId);
 
       const labCandidates = (stages.harness.blocking || stages.harness.survivors || [])
         .filter((f) => f.survived);
@@ -1151,23 +1499,30 @@ async function main() {
           ['critical', 'high', 'error'].includes(f.severity));
 
       if (!args['no-lab'] && forLab.length) {
-        stages.lab = stageLab(subject, outDir, forLab, diffPath, config);
+        stages.lab = stageLab(subject, outDir, forLab, diffPath, config, runId);
       } else if (args['no-lab']) {
+        stages.lab = skippedStage('lab');
         console.log('\n> lab  skipped (--no-lab)');
       } else {
+        stages.lab = skippedStage('lab', 'no_candidates');
         console.log('\n> lab  skipped (nothing to reproduce)');
       }
     } else {
       console.log('\n> AI stages skipped (--skip-ai)');
+      stages.triage = skippedStage('triage');
+      stages.harness = skippedStage('harness');
+      stages.lab = skippedStage('lab');
     }
 
     const gate = finalGate({
       staticResult: stages.static,
+      scannersResult: stages.scanners,
       triageResult: stages.triage,
       harnessResult: stages.harness,
       labResult: stages.lab,
       config,
     });
+    gate.runId = runId;
 
     // .usage.jsonl is kept as a hidden internal artifact (child-process writes).
     const usage = summarizeUsage(collectUsageCalls(outDir));
@@ -1190,8 +1545,13 @@ async function main() {
       console.error(`\n\x1b[31mBLOCK\x1b[0m ${gate.reasons.join('; ')}`);
       return gate.inconclusiveBlock && !stages.lab?.reproduced?.length ? 2 : 1;
     }
-    console.log(`\n\x1b[32mPASS\x1b[0m`);
+    console.log('PASS');
     return 0;
+  } catch (err) {
+    const reason = 'pipeline_error: ' + err.message;
+    writeFailureArtifacts(outDir, runId, reason);
+    console.error(reason);
+    return 3;
   } finally {
     cleanupSubject(subject);
   }

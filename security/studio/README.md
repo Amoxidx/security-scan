@@ -96,6 +96,10 @@ node security/studio/check-pr.mjs --list-targets
 5. **Lab only for survivors** — Qwen sandbox runs only on findings that would block, capped by `--max-lab` / `config.lab.maxFindings`.
 6. **Lab model auto-pick** — `config.lab.model` (`ollama:jk-coder`) with `preferredModels` fallback if the primary tag is not pulled.
 
+### Stage execution health
+
+Each requested stage must prove that it completed before an empty findings list can contribute to a pass. The harness writes the versioned `execution.json` artifact with the current Studio run ID; Studio rejects missing, malformed, stale, or exit-mismatched artifacts and clears prior stage output before each run. A completed scan with a real finding can still be cleared by an independently conclusive lab result. A failed or incomplete scan cannot be cleared by the lab. Explicitly skipped stages are shown as skipped in the report.
+
 ## Subscription-agent auth from SSH
 
 ```bash
@@ -124,6 +128,40 @@ bash security/studio/claude-via-gui.sh --studio-auth-check
 | `not-reproduced` | Drop from blocking set |
 | `inconclusive` | Keep severity decision (fail closed) |
 | skipped | Keep harness severity decision |
+
+### Triage execution contract
+
+`security/redteam/triage.mjs` writes a versioned `triaged.json` execution artifact. Its
+metadata includes `schemaVersion`, `stage`, `runId`, `status`, `outcome`, `exit`, and
+`reasonCodes`, alongside the triage rows and their `blocking`/`dismissedButBlocked`
+summary. A complete clean result has `status: "complete"`, `outcome: "pass"`, and
+`exit: 0`. A complete result with a blocking finding has `status: "complete"`,
+`outcome: "block"`, and `exit: 1`. Provider errors, malformed or incomplete model
+responses, missing coverage, and unavailable triage cannot certify a clean scan.
+Incomplete execution normally uses `outcome: "inconclusive"` and `exit: 3`; an
+unavailable provider with an existing scanner blocker preserves `outcome: "block"`
+and `exit: 1` while retaining `status: "incomplete"`. Consumers must check execution
+metadata rather than infer completeness from the exit code. Studio returns `2` for
+an inconclusive blocked run, or `1` when a blocking finding was independently
+reproduced by the lab; a complete blocked run returns `1`.
+
+The model response uses the prompt enum `critical`, `high`, `medium`, or `low` for
+its own assessment. Scanner severity remains authoritative and may also be `error`,
+`warning`, or `note`; configured `blockOn` severities remain blocking regardless of a
+triage `false_positive`. Soft warning/note findings can be dismissed only by a valid,
+complete triage result. The model cannot replace the scanner's `tool`, `ruleId`,
+`file`, `line`, or message identity. Every original scanner finding must be accounted
+for exactly once.
+
+The Studio run invalidates the previous top-level `gate.json` and `report.md` before
+starting and writes fresh failure artifacts for setup or pipeline errors. On an
+argument-parsing error, this also applies when a valid `--out` was already parsed;
+without an accepted output path, no report directory can be attributed to that failed
+invocation. Help and target-listing requests do not modify reports. Consumers must
+check the process result and current run ID rather than reuse a previous PASS.
+Standalone triage
+with no provider exits `3` even when the finding is below the blocking threshold: that
+is an intentional incomplete result, not a clean pass.
 
 ## Authority
 

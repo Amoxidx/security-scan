@@ -141,6 +141,12 @@ node security/scanners/normalize.mjs --sarif security-report/sarif --diff securi
 # Stufe 2 — Triage
 node security/redteam/triage.mjs --findings security-report/findings.json --repo .
 
+# triaged.json ist ein versioniertes Ausführungsartefakt:
+# complete/pass/0 = sauber, complete/block/1 = vollständiger Blocker,
+# incomplete/inconclusive/3 = keine Freigabe (im Studio als Exit 2 sichtbar).
+# Die Scanner-Schwere bleibt maßgeblich; blockOn-Schweregrade werden auch bei
+# einer Triage-Entscheidung false_positive nicht entlastet.
+
 # Stufe 3 — Lens-Kanal
 node security/redteam/harness.mjs --diff security-report/pr.diff --out security-report/report
 

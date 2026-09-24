@@ -269,3 +269,17 @@ und die Blocking-Schwelle in `gate.blockOn`.
 Der PR-Pfad läuft ausschließlich über `workflow_run` (kein `pull_request` am
 Authority-Workflow). Der Trigger ist minimal und ohne Secrets; die Authority-Jobs laden
 YAML und `security/` vom Default-Branch.
+
+## Rust-Abhängigkeiten und Scanner-Grenzen
+
+`security/scanners/run-scanners.sh` lässt ein Ziel mit `Cargo.lock` allein zum OSV-Scan zu und
+scannt es mit `-r` rekursiv. Fehlende oder nicht parsebare Reports sowie unerwartete Scanner-
+Exit-Codes werden als Fehler erfasst; normalize.mjs kann daraus kein sauberes Ergebnis machen.
+scanners.json führt zusätzlich den maschinenlesbaren reasonCode: Nur
+status: "skipped" mit reasonCode: "not_applicable_no_lockfile" ist neutral. Fehlende
+Executables, ein nicht erreichbares OSV-Backend und degradierte Semgrep-Regeln bleiben trotz
+des report-only Exit-Codes 0 als Ausführungsfehler beziehungsweise Teilabdeckung sichtbar.
+
+Das ergänzt keine Rust-spezifischen Semgrep-Regeln und führt keine nativen Geräte- oder
+End-to-End-Tests aus. Der Scanner-Nachweis ist deshalb kein Beleg für die Sicherheit der gesamten
+Wallet.

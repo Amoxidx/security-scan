@@ -13,7 +13,20 @@ const config = {
 };
 const parseJson = (text) => JSON.parse(text);
 const resolveModel = (_config, spec) => ({ spec });
-const finding = { file: 'src/app.mjs', line: 7, title: 'Example' };
+const finding = {
+  file: 'src/app.mjs',
+  line: 7,
+  title: 'Example',
+  severity: 'high',
+  confidence: 'high',
+  root_cause: 'A reachable fallback weakens the stated guarantee',
+  attacker_model: 'A remote caller controls the request input',
+  impact: 'The attacker can trigger the weaker path',
+  guarantee_broken: 'The documented high-assurance path is not enforced',
+  how_to_disprove: 'Show that the fallback cannot be reached from any caller-controlled input',
+  attack_path: ['request input', 'fallback branch'],
+};
+const malformedFinding = { file: finding.file, line: finding.line, title: finding.title };
 
 async function run(outcomes) {
   const calls = [];
@@ -51,6 +64,35 @@ test('hunt model fallback is visible, tagged, ordered, and fail-closed', async (
     }]);
     assert.equal(result.ok, true);
     assert.match(logs[0], /primary primary:model unavailable\/failed -> fell back to fallback:model/);
+  });
+
+  await t.test('malformed primary findings fall back and are never emitted', async () => {
+    const { result, calls, logs } = await run({
+      [primary]: [malformedFinding],
+      [fallback]: [finding],
+    });
+    assert.deepEqual(calls, [primary, fallback]);
+    assert.deepEqual(result.findings, [{
+      ...finding,
+      lens: 'entropy',
+      huntModel: fallback,
+      usedFallback: true,
+    }]);
+    assert.equal(result.ok, true);
+    assert.match(logs[0], /primary primary:model unavailable\/failed -> fell back to fallback:model/);
+  });
+
+  await t.test('malformed fallback findings fail closed without output', async () => {
+    const { result, calls, logs } = await run({
+      [primary]: new Error('primary down'),
+      [fallback]: [malformedFinding],
+    });
+    assert.deepEqual(calls, [primary, fallback]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.findings, []);
+    assert.match(result.error, /primary down/);
+    assert.match(result.error, /unparseable or malformed hunt response/);
+    assert.deepEqual(logs, []);
   });
 
   await t.test('primary success does not use fallback', async () => {

@@ -263,10 +263,22 @@ prompt
 EOF
   WRAP_RETRIES=0
   ncount="$(cat "$COUNT" 2>/dev/null || echo 0)"
-  if [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "3" ]; then
-    case_result "empty-stderr run_via_gui retries default-2 extra times" 1
+  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] \
+      && command -v launchctl >/dev/null 2>&1 \
+      && launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+    if [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "3" ] \
+        && echo "$RUN_OUT" | grep -q 'run_via_gui failed'; then
+      case_result "empty-stderr run_via_gui retries default-2 extra times" 1
+    else
+      case_result "empty-stderr run_via_gui retries default-2 extra times" 0 \
+        "rc=$RUN_RC count=$ncount out=$(short "$RUN_OUT")"
+    fi
+  elif [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "1" ] \
+      && echo "$RUN_OUT" | grep -q 'run_direct failed' \
+      && echo "$RUN_OUT" | grep -q 'GUI session unavailable'; then
+    case_result "unavailable GUI fallback stays fail-closed after one direct attempt" 1
   else
-    case_result "empty-stderr run_via_gui retries default-2 extra times" 0 \
+    case_result "unavailable GUI fallback stays fail-closed after one direct attempt" 0 \
       "rc=$RUN_RC count=$ncount out=$(short "$RUN_OUT")"
   fi
 
@@ -302,7 +314,17 @@ EOF
   # --- sanitize_text + unwritable cache (review blockers) ---
 
   file_mode() {
-    stat -f '%OLp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null || echo missing
+    local mode os
+    os="$(uname -s 2>/dev/null || true)"
+    case "$os" in
+      Darwin) mode="$(stat -f '%OLp' "$1" 2>/dev/null || true)" ;;
+      Linux) mode="$(stat -c '%a' "$1" 2>/dev/null || true)" ;;
+      *) mode="" ;;
+    esac
+    case "$mode" in
+      ''|*[!0-7]*) printf 'missing' ;;
+      *) printf '%s' "$mode" ;;
+    esac
   }
 
   # Persist a failing run_direct whose stderr is $1; then inspect last-failure.json.
@@ -528,6 +550,99 @@ PROMPT
   else
     case_result "foreign-owned cache refuses instead of being reused" 0 \
       "rc=$RUN_RC out=$(short "$RUN_OUT")"
+  fi
+  # GNU stat accepts `-f` as filesystem status and may exit zero with
+  # multiline overlayfs metadata. Exercise that Linux behavior even on macOS.
+  LINUX_STATBIN="$GDIR/linux-stat-bin"
+  LINUX_STAT_LOG="$GDIR/linux-stat-args.log"
+  mkdir -p "$LINUX_STATBIN"
+  cat > "$LINUX_STATBIN/uname" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-s" ]; then
+  echo Linux
+  exit 0
+fi
+exec /usr/bin/uname "$@"
+EOF
+  cat > "$LINUX_STATBIN/stat" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$STAT_CALL_LOG"
+if [ "$1" = "-f" ]; then
+  printf '%s\n' 'Filesystem type: overlayfs' 'Block size: 4096'
+  exit 0
+fi
+if [ "$1" = "-c" ] && [ "$2" = "%u" ]; then
+  printf '%s\n' "$STAT_OWNER_UID"
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+EOF
+  chmod +x "$LINUX_STATBIN/uname" "$LINUX_STATBIN/stat"
+  export STAT_CALL_LOG="$LINUX_STAT_LOG"
+  export STAT_OWNER_UID="$(id -u)"
+  : > "$LINUX_STAT_LOG"
+  CACHE="$GDIR/linux-owned-cache"
+  rm -rf "$CACHE"
+  mkdir -p "$CACHE"
+  WRAP_PATH="$LINUX_STATBIN:$PATH"
+  run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+  WRAP_PATH=
+  if [ "$RUN_RC" -eq 0 ] \
+      && echo "$RUN_OUT" | grep -q 'should-not-run' \
+      && grep -q '^-c %u ' "$LINUX_STAT_LOG" \
+      && ! grep -q '^-f %u ' "$LINUX_STAT_LOG"; then
+    case_result "GNU stat filesystem output does not masquerade as cache owner" 1
+  else
+    case_result "GNU stat filesystem output does not masquerade as cache owner" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT") stat=$(short "$(cat "$LINUX_STAT_LOG")")"
+  fi
+
+  # A foreign numeric UID from GNU stat must still refuse the cache.
+  STAT_OWNER_UID="$(( $(id -u) + 1 ))"
+  export STAT_OWNER_UID
+  : > "$LINUX_STAT_LOG"
+  CACHE="$GDIR/linux-foreign-cache"
+  rm -rf "$CACHE"
+  mkdir -p "$CACHE"
+  WRAP_PATH="$LINUX_STATBIN:$PATH"
+  run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+  WRAP_PATH=
+  if [ "$RUN_RC" -eq 3 ] \
+      && echo "$RUN_OUT" | grep -q 'exists but is not owned by the current user' \
+      && ! echo "$RUN_OUT" | grep -q 'should-not-run' \
+      && grep -q '^-c %u ' "$LINUX_STAT_LOG" \
+      && ! grep -q '^-f %u ' "$LINUX_STAT_LOG"; then
+    case_result "Linux stat rejects a genuinely foreign cache owner" 1
+  else
+    case_result "Linux stat rejects a genuinely foreign cache owner" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT") stat=$(short "$(cat "$LINUX_STAT_LOG")")"
+  fi
+  unset STAT_OWNER_UID STAT_CALL_LOG
+  if [ "$(uname -s 2>/dev/null || true)" = "Linux" ]; then
+    # Exercise the real GNU stat command used on Linux runners. Coreutils
+    # versions may either succeed with filesystem metadata or fail after
+    # printing partial output for the BSD-style invocation; neither may affect
+    # the wrapper's `stat -c %u` ownership check.
+    CACHE="$GDIR/linux-native-cache"
+    rm -rf "$CACHE"
+    mkdir -p "$CACHE"
+    run stat -f %u "$CACHE"
+    GNU_STAT_RC="$RUN_RC"
+    GNU_STAT_OUT="$RUN_OUT"
+    run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+    if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'should-not-run'; then
+      case_result "native GNU stat behavior does not reject owned cache" 1 \
+        "stat -f rc=$GNU_STAT_RC out=$(short "$GNU_STAT_OUT")"
+    else
+      case_result "native GNU stat behavior does not reject owned cache" 0 \
+        "stat -f rc=$GNU_STAT_RC stat_out=$(short "$GNU_STAT_OUT") wrapper_rc=$RUN_RC out=$(short "$RUN_OUT")"
+    fi
   fi
   CACHE="$GDIR/cache"
   MARK="$CACHE/last-failure.json"
