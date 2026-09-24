@@ -263,10 +263,22 @@ prompt
 EOF
   WRAP_RETRIES=0
   ncount="$(cat "$COUNT" 2>/dev/null || echo 0)"
-  if [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "3" ]; then
-    case_result "empty-stderr run_via_gui retries default-2 extra times" 1
+  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] \
+      && command -v launchctl >/dev/null 2>&1 \
+      && launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+    if [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "3" ] \
+        && echo "$RUN_OUT" | grep -q 'run_via_gui failed'; then
+      case_result "empty-stderr run_via_gui retries default-2 extra times" 1
+    else
+      case_result "empty-stderr run_via_gui retries default-2 extra times" 0 \
+        "rc=$RUN_RC count=$ncount out=$(short "$RUN_OUT")"
+    fi
+  elif [ "$RUN_RC" -ne 0 ] && [ "$ncount" = "1" ] \
+      && echo "$RUN_OUT" | grep -q 'run_direct failed' \
+      && echo "$RUN_OUT" | grep -q 'GUI session unavailable'; then
+    case_result "unavailable GUI fallback stays fail-closed after one direct attempt" 1
   else
-    case_result "empty-stderr run_via_gui retries default-2 extra times" 0 \
+    case_result "unavailable GUI fallback stays fail-closed after one direct attempt" 0 \
       "rc=$RUN_RC count=$ncount out=$(short "$RUN_OUT")"
   fi
 
@@ -302,7 +314,17 @@ EOF
   # --- sanitize_text + unwritable cache (review blockers) ---
 
   file_mode() {
-    stat -f '%OLp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null || echo missing
+    local mode os
+    os="$(uname -s 2>/dev/null || true)"
+    case "$os" in
+      Darwin) mode="$(stat -f '%OLp' "$1" 2>/dev/null || true)" ;;
+      Linux) mode="$(stat -c '%a' "$1" 2>/dev/null || true)" ;;
+      *) mode="" ;;
+    esac
+    case "$mode" in
+      ''|*[!0-7]*) printf 'missing' ;;
+      *) printf '%s' "$mode" ;;
+    esac
   }
 
   # Persist a failing run_direct whose stderr is $1; then inspect last-failure.json.
@@ -601,27 +623,25 @@ PROMPT
   fi
   unset STAT_OWNER_UID STAT_CALL_LOG
   if [ "$(uname -s 2>/dev/null || true)" = "Linux" ]; then
-    # Exercise the real GNU stat command used on Linux runners, in addition to
-    # the cross-platform controlled mock cases above.
+    # Exercise the real GNU stat command used on Linux runners. Coreutils
+    # versions may either succeed with filesystem metadata or fail after
+    # printing partial output for the BSD-style invocation; neither may affect
+    # the wrapper's `stat -c %u` ownership check.
     CACHE="$GDIR/linux-native-cache"
     rm -rf "$CACHE"
     mkdir -p "$CACHE"
     run stat -f %u "$CACHE"
     GNU_STAT_RC="$RUN_RC"
     GNU_STAT_OUT="$RUN_OUT"
-    if [ "$GNU_STAT_RC" -eq 0 ] && [ "$GNU_STAT_OUT" != "$(id -u)" ]; then
-      run invoke_wrap -p --model sonnet <<'PROMPT'
+    run invoke_wrap -p --model sonnet <<'PROMPT'
 prompt
 PROMPT
-      if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'should-not-run'; then
-        case_result "native GNU stat filesystem metadata does not reject owned cache" 1
-      else
-        case_result "native GNU stat filesystem metadata does not reject owned cache" 0 \
-          "rc=$RUN_RC out=$(short "$RUN_OUT") stat=$(short "$GNU_STAT_OUT")"
-      fi
+    if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'should-not-run'; then
+      case_result "native GNU stat behavior does not reject owned cache" 1 \
+        "stat -f rc=$GNU_STAT_RC out=$(short "$GNU_STAT_OUT")"
     else
-      case_result "native GNU stat exposes the regression precondition" 0 \
-        "stat -f rc=$GNU_STAT_RC out=$(short "$GNU_STAT_OUT") uid=$(id -u)"
+      case_result "native GNU stat behavior does not reject owned cache" 0 \
+        "stat -f rc=$GNU_STAT_RC stat_out=$(short "$GNU_STAT_OUT") wrapper_rc=$RUN_RC out=$(short "$RUN_OUT")"
     fi
   fi
   CACHE="$GDIR/cache"
