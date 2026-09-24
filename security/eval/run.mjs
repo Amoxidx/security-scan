@@ -298,11 +298,54 @@ for (const testCase of cases) {
     args.noAi && testCase.must_detect && testCase.static_detectable === false
       ? '  (AI-only, excluded from --no-ai rate)'
       : '';
+  const diagnosticText = (value, limit = 160) => {
+    const raw = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+      ? String(value)
+      : '(invalid)';
+    const prefix = raw.slice(0, limit);
+    let truncated = raw.length > prefix.length;
+    let escaped = '';
+    const contentLimit = limit - (truncated ? 1 : 0);
+    for (const ch of prefix) {
+      const code = ch.codePointAt(0);
+      let shown = ch;
+      if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
+        shown = `\\x${code.toString(16).padStart(2, '0')}`;
+      } else if (code === 0x2028 || code === 0x2029 || (code >= 0xd800 && code <= 0xdfff)) {
+        shown = `\\u${code.toString(16).padStart(4, '0')}`;
+      }
+      if (escaped.length + shown.length > contentLimit) {
+        truncated = true;
+        break;
+      }
+      escaped += shown;
+    }
+    return truncated ? `${escaped.slice(0, limit - 1)}…` : escaped;
+  };
+  const diagnosticList = (items, format, limit = 6, total = items.length) => {
+    const shown = items.slice(0, limit).map(format);
+    if (total > shown.length) shown.push(`+${total - shown.length} omitted`);
+    return shown.join('; ') || '(none)';
+  };
+  const blockedEvidenceCount = staticResult.blocks.length + scanResult.findings.length;
+  const staticEvidence = staticResult.blocks.slice(0, 6);
+  const blockedEvidence = staticEvidence.concat(
+    scanResult.findings.slice(0, Math.max(0, 6 - staticEvidence.length)),
+  );
+  const wrongReasonEvidence = result.outcome === 'BLOCKED_WRONG_REASON'
+    ? [
+        `    static blocks: ${diagnosticList(staticResult.blocks, (item) => diagnosticText(item))}`,
+        `    scanner findings: ${diagnosticList(scanResult.findings, (f) =>
+          `${diagnosticText(f.ruleId)} @${diagnosticText(f.file)}:${diagnosticText(f.line)}`)}`,
+        `    scanner statuses: ${diagnosticList(scanResult.scanners, (s) =>
+          `${diagnosticText(s.tool)}=${diagnosticText(s.status)}/${diagnosticText(s.reasonCode)}`, 4)}`,
+      ].join('\n')
+    : '';
   console.log(
     `${result.outcome.padEnd(22)} ${mark.padEnd(13)} ${testCase.id}${aiOnlyNote}` +
       (result.outcome === 'FP'
-        ? `\n    blocked by: ${[...staticResult.blocks, ...scanResult.findings.map((f) => `${f.ruleId} @${f.file}:${f.line}`)].join('; ')}`
-        : '')
+        ? `\n    blocked by: ${diagnosticList(blockedEvidence, (item) => typeof item === 'string' ? diagnosticText(item) : `${diagnosticText(item.ruleId)} @${diagnosticText(item.file)}:${diagnosticText(item.line)}`, 6, blockedEvidenceCount)}`
+        : wrongReasonEvidence ? `\n${wrongReasonEvidence}` : '')
   );
 
   rows.push({

@@ -650,6 +650,32 @@ process.stdout.write('recorded\\n');
     `argv=${JSON.stringify(clArgv)} stdin=${JSON.stringify(clStdin)}`,
   );
 
+  const earlyExitBin = join(work, 'fake-cli-early-exit.sh');
+  writeFileSync(earlyExitBin, '#!/bin/sh\nexit 0\n');
+  chmodSync(earlyExitBin, 0o755);
+  let earlyExitError = '';
+  try {
+    await m.complete(
+      { maxConcurrency: 1, providers: {} },
+      {
+        providerName: 'early-exit-cli',
+        model: 'test',
+        provider: { type: 'cli', command: [earlyExitBin], timeoutMs: 8000 },
+        spec: 'early-exit-cli:test',
+      },
+      'sys',
+      'P'.repeat(4 * 1024 * 1024),
+      { retries: 1 },
+    );
+  } catch (err) {
+    earlyExitError = String(err?.message || err);
+  }
+  check(
+    'early-exiting CLI incomplete stdin write fails closed',
+    /stdin (write failed \(EPIPE\)|write did not finish before child close)/.test(earlyExitError),
+    earlyExitError || 'call resolved without reporting prompt delivery failure',
+  );
+
   let argMaxErr = '';
   try {
     const argMax = Number(spawnSync('getconf', ['ARG_MAX'], { encoding: 'utf8' }).stdout.trim());

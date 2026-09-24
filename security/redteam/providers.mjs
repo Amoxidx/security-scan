@@ -280,12 +280,27 @@ function callCli(config, target, system, user, temperature) {
       reject(new Error(`${bin} timed out`));
     }, provider.timeoutMs || 300000);
 
+    let stdinError = null;
+    let stdinFinished = false;
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { err += d; });
+    child.stdin.on('finish', () => { stdinFinished = true; });
+    child.stdin.on('error', (e) => {
+      // A CLI can close stdin before the parent finishes writing the prompt. Handle the
+      // stream error; only stdin-fed prompts fail because promptArg targets receive argv.
+      if (!promptArg) {
+        stdinError = e;
+        child.kill('SIGKILL');
+      }
+    });
     child.on('error', (e) => { clearTimeout(timer); reject(e); });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (code !== 0) reject(new Error(`${bin} exited ${code}: ${err.slice(0, 300)}`));
+      if (stdinError) {
+        reject(new Error(`${bin} stdin write failed (${stdinError.code || stdinError.message})`));
+      } else if (!promptArg && !stdinFinished) {
+        reject(new Error(`${bin} stdin write did not finish before child close`));
+      } else if (code !== 0) reject(new Error(`${bin} exited ${code}: ${err.slice(0, 300)}`));
       else if (provider.jsonOutput === true) resolve_(takeCliResult(target, out));
       else resolve_(out);
     });

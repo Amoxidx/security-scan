@@ -79,6 +79,13 @@ short() {
   echo "$1" | tr '\n' ' ' | cut -c1-220
 }
 
+failure_excerpt() {
+  printf '%s\n' "$1" \
+    | grep -E -A1 'FAIL|WRONG REASON|BLOCKED_WRONG_REASON|static blocks:|scanner findings:|scanner statuses:|THRESHOLD FAIL|Detection |FALSE POSITIVE|Error:|Error \[|Fälle bestanden' \
+    | cut -c1-500 \
+    | tail -n 40 || true
+}
+
 # Disable errexit for the suite body; each case captures its own status.
 set +e
 
@@ -900,7 +907,11 @@ eval_copy_case() {
     case_result "I1-counter: --no-ai rate is over static_detectable only (exit 0)" 1
   else
     case_result "I1-counter: --no-ai rate is over static_detectable only (exit 0)" 0 \
-      "sem_rc=$SEM_RC real_rc=$RUN_RC sem=$(short "$SEM_OUT") real=$(short "$RUN_OUT")"
+      "sem_rc=$SEM_RC real_rc=$RUN_RC
+--- isolated semantics fixture ---
+$(failure_excerpt "$SEM_OUT")
+--- documented corpus run ---
+$(failure_excerpt "$RUN_OUT")"
   fi
 }
 
@@ -1549,7 +1560,8 @@ echo "=== canonical child regression suites ==="
   if [ "$RUN_RC" -eq 0 ]; then
     case_result "studio.test.sh" 1
   else
-    case_result "studio.test.sh" 0 "rc=$RUN_RC out=$(short "$RUN_OUT")"
+    case_result "studio.test.sh" 0 "rc=$RUN_RC nested failure excerpt:
+$(failure_excerpt "$RUN_OUT")"
   fi
 }
 
