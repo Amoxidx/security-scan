@@ -529,6 +529,101 @@ PROMPT
     case_result "foreign-owned cache refuses instead of being reused" 0 \
       "rc=$RUN_RC out=$(short "$RUN_OUT")"
   fi
+  # GNU stat accepts `-f` as filesystem status and may exit zero with
+  # multiline overlayfs metadata. Exercise that Linux behavior even on macOS.
+  LINUX_STATBIN="$GDIR/linux-stat-bin"
+  LINUX_STAT_LOG="$GDIR/linux-stat-args.log"
+  mkdir -p "$LINUX_STATBIN"
+  cat > "$LINUX_STATBIN/uname" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-s" ]; then
+  echo Linux
+  exit 0
+fi
+exec /usr/bin/uname "$@"
+EOF
+  cat > "$LINUX_STATBIN/stat" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$STAT_CALL_LOG"
+if [ "$1" = "-f" ]; then
+  printf '%s\n' 'Filesystem type: overlayfs' 'Block size: 4096'
+  exit 0
+fi
+if [ "$1" = "-c" ] && [ "$2" = "%u" ]; then
+  printf '%s\n' "$STAT_OWNER_UID"
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+EOF
+  chmod +x "$LINUX_STATBIN/uname" "$LINUX_STATBIN/stat"
+  export STAT_CALL_LOG="$LINUX_STAT_LOG"
+  export STAT_OWNER_UID="$(id -u)"
+  : > "$LINUX_STAT_LOG"
+  CACHE="$GDIR/linux-owned-cache"
+  rm -rf "$CACHE"
+  mkdir -p "$CACHE"
+  WRAP_PATH="$LINUX_STATBIN:$PATH"
+  run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+  WRAP_PATH=
+  if [ "$RUN_RC" -eq 0 ] \
+      && echo "$RUN_OUT" | grep -q 'should-not-run' \
+      && grep -q '^-c %u ' "$LINUX_STAT_LOG" \
+      && ! grep -q '^-f %u ' "$LINUX_STAT_LOG"; then
+    case_result "GNU stat filesystem output does not masquerade as cache owner" 1
+  else
+    case_result "GNU stat filesystem output does not masquerade as cache owner" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT") stat=$(short "$(cat "$LINUX_STAT_LOG")")"
+  fi
+
+  # A foreign numeric UID from GNU stat must still refuse the cache.
+  STAT_OWNER_UID="$(( $(id -u) + 1 ))"
+  export STAT_OWNER_UID
+  : > "$LINUX_STAT_LOG"
+  CACHE="$GDIR/linux-foreign-cache"
+  rm -rf "$CACHE"
+  mkdir -p "$CACHE"
+  WRAP_PATH="$LINUX_STATBIN:$PATH"
+  run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+  WRAP_PATH=
+  if [ "$RUN_RC" -eq 3 ] \
+      && echo "$RUN_OUT" | grep -q 'exists but is not owned by the current user' \
+      && ! echo "$RUN_OUT" | grep -q 'should-not-run' \
+      && grep -q '^-c %u ' "$LINUX_STAT_LOG" \
+      && ! grep -q '^-f %u ' "$LINUX_STAT_LOG"; then
+    case_result "Linux stat rejects a genuinely foreign cache owner" 1
+  else
+    case_result "Linux stat rejects a genuinely foreign cache owner" 0 \
+      "rc=$RUN_RC out=$(short "$RUN_OUT") stat=$(short "$(cat "$LINUX_STAT_LOG")")"
+  fi
+  unset STAT_OWNER_UID STAT_CALL_LOG
+  if [ "$(uname -s 2>/dev/null || true)" = "Linux" ]; then
+    # Exercise the real GNU stat command used on Linux runners, in addition to
+    # the cross-platform controlled mock cases above.
+    CACHE="$GDIR/linux-native-cache"
+    rm -rf "$CACHE"
+    mkdir -p "$CACHE"
+    run stat -f %u "$CACHE"
+    GNU_STAT_RC="$RUN_RC"
+    GNU_STAT_OUT="$RUN_OUT"
+    if [ "$GNU_STAT_RC" -eq 0 ] && [ "$GNU_STAT_OUT" != "$(id -u)" ]; then
+      run invoke_wrap -p --model sonnet <<'PROMPT'
+prompt
+PROMPT
+      if [ "$RUN_RC" -eq 0 ] && echo "$RUN_OUT" | grep -q 'should-not-run'; then
+        case_result "native GNU stat filesystem metadata does not reject owned cache" 1
+      else
+        case_result "native GNU stat filesystem metadata does not reject owned cache" 0 \
+          "rc=$RUN_RC out=$(short "$RUN_OUT") stat=$(short "$GNU_STAT_OUT")"
+      fi
+    else
+      case_result "native GNU stat exposes the regression precondition" 0 \
+        "stat -f rc=$GNU_STAT_RC out=$(short "$GNU_STAT_OUT") uid=$(id -u)"
+    fi
+  fi
   CACHE="$GDIR/cache"
   MARK="$CACHE/last-failure.json"
   mkdir -p "$CACHE"

@@ -77,9 +77,14 @@ is_nonneg_int() {
 # stays at each call site so best-effort vs fail-loud is unchanged.
 ensure_owned_cache_root() {
   [ -e "$CACHE_ROOT" ] || return 0
-  local owner
-  owner="$(stat -f %u "$CACHE_ROOT" 2>/dev/null || stat -c %u "$CACHE_ROOT" 2>/dev/null || true)"
-  if [ "$owner" != "$(id -u)" ]; then
+  local owner os
+  os="$(uname -s 2>/dev/null || true)"
+  case "$os" in
+    Darwin) owner="$(stat -f %u "$CACHE_ROOT" 2>/dev/null || true)" ;;
+    Linux) owner="$(stat -c %u "$CACHE_ROOT" 2>/dev/null || true)" ;;
+    *) owner="" ;;
+  esac
+  if ! is_nonneg_int "$owner" || [ "$owner" != "$(id -u)" ]; then
     SKIP_FAILURE_MARKER=1
     die "cache dir ${CACHE_ROOT} exists but is not owned by the current user — refusing to use it"
   fi
